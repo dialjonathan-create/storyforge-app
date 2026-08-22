@@ -5,6 +5,15 @@ import { AnimatePresence, motion } from "framer-motion";
 import "./styles.css";
 
 const ABILITY_URL = import.meta.env.VITE_ABILITY_URL || "https://ability-supervisor-service-818269465014.us-central1.run.app";
+// Scoped product token (2026-08-22): authorizes story.* / storyforge.* only.
+const STORYFORGE_TOKEN =
+  (typeof localStorage !== "undefined" && localStorage.getItem("storyforge_token")) ||
+  import.meta.env.VITE_STORYFORGE_TOKEN || "";
+function abilityHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (STORYFORGE_TOKEN) headers.Authorization = `Bearer ${STORYFORGE_TOKEN}`;
+  return headers;
+}
 const FAMILY = [
   { userId: "jonathan", displayName: "Jonathan", avatar: "⚓" },
   { userId: "adele", displayName: "Adele", avatar: "🧭" },
@@ -40,10 +49,11 @@ function tierForReaders(readers) {
 async function execute(command, args = {}) {
   const response = await fetch(`${ABILITY_URL}/v1/execute`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: abilityHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ command, args }),
   });
   const data = await response.json().catch(() => ({}));
+  if (response.status === 401) throw new Error("Storyforge is not signed in on this device (no token). Ask Jonathan.");
   if (!response.ok || data.ok === false || data.error) throw new Error(data.message || data.error || "Storyforge request failed");
   return data;
 }
@@ -1167,7 +1177,7 @@ async function getChapterStatus(universeId, storyId, chapterNumber) {
     storyId,
     chapterNumber: String(chapterNumber),
   });
-  const response = await fetch(`${ABILITY_URL}/storyforge/chapter/status?${params.toString()}`, { cache: "no-store" });
+  const response = await fetch(`${ABILITY_URL}/storyforge/chapter/status?${params.toString()}`, { cache: "no-store", headers: abilityHeaders() });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.ok === false || data.error) throw new Error(data.message || data.error || "Could not check chapter status");
   return data;
