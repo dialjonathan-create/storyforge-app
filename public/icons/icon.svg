@@ -1,5 +1,55 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#1a2744"/>
-  <circle cx="256" cy="256" r="188" fill="none" stroke="#b07d20" stroke-width="10" opacity=".55"/>
-  <text x="256" y="328" text-anchor="middle" font-family="Cinzel, Georgia, serif" font-size="230" fill="#c8922a">S</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="38%" r="75%">
+      <stop offset="0" stop-color="#26385a"/>
+      <stop offset="55%" stop-color="#1a2744"/>
+      <stop offset="100%" stop-color="#101a30"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#f3cf7e" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#f3cf7e" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f1d38a"/>
+      <stop offset="0.5" stop-color="#d8ab52"/>
+      <stop offset="1" stop-color="#a97928"/>
+    </linearGradient>
+    <filter id="blur" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+  </defs>
+  <!-- Full-bleed, no baked-in corner radius: this is a maskable PWA icon
+       (manifest purpose "any maskable"), so the OS applies its own shape.
+       Pre-rounding here would double up with the platform's own mask and
+       clip inconsistently across iOS/Android. -->
+  <rect width="512" height="512" fill="url(#bg)"/>
+
+  <circle cx="120" cy="110" r="2.4" fill="#f1d38a" opacity="0.55"/>
+  <circle cx="398" cy="96" r="1.8" fill="#f1d38a" opacity="0.4"/>
+  <circle cx="432" cy="180" r="2" fill="#f1d38a" opacity="0.5"/>
+  <circle cx="90" cy="220" r="1.6" fill="#f1d38a" opacity="0.35"/>
+
+  <circle cx="256" cy="266" r="118" fill="url(#glow)" filter="url(#blur)"/>
+
+  <g stroke="url(#gold)" stroke-linecap="round" opacity="0.85">
+    <line x1="256" y1="140" x2="256" y2="392" stroke-width="3.5"/>
+    <line x1="130" y1="266" x2="382" y2="266" stroke-width="3.5"/>
+    <line x1="168" y1="178" x2="344" y2="354" stroke-width="2"/>
+    <line x1="344" y1="178" x2="168" y2="354" stroke-width="2"/>
+  </g>
+
+  <path d="M256 148
+           C262 210 262 210 320 266
+           C262 322 262 322 256 384
+           C250 322 250 322 192 266
+           C250 210 250 210 256 148 Z"
+        fill="url(#gold)"/>
+  <path d="M256 196
+           C259 228 260 260 292 266
+           C260 272 259 304 256 336
+           C253 304 252 272 220 266
+           C252 260 253 228 256 196 Z"
+        fill="#1a2744" opacity="0.35"/>
+
+  <circle cx="256" cy="266" r="152" fill="none" stroke="url(#gold)" stroke-width="2.5" opacity="0.45"/>
 </svg>
