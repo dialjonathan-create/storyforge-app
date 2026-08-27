@@ -600,7 +600,23 @@ function ChapterReader() {
   const [talkText, setTalkText] = useState("");
   const [proseReady, setProseReady] = useState(true);
   const [reshapedPulse, setReshapedPulse] = useState(false);
+  const [bookmarkFlash, setBookmarkFlash] = useState(false);
+  const [defineWord, setDefineWord] = useState(null);
   const tier = tierForReaders(activeReaders);
+
+  function saveBookmarkHere() {
+    if (!chapter) return;
+    const point = paragraphAtScroll(chapter);
+    writeBookmark(storyId, {
+      chapterNumber,
+      paragraphIndex: point.index,
+      snippet: String(point.text || "").slice(0, 90),
+      savedBy: activeReaders[0] || "jonathan",
+      savedAt: Date.now(),
+    });
+    setBookmarkFlash(true);
+    setTimeout(() => setBookmarkFlash(false), 1600);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -614,8 +630,12 @@ function ChapterReader() {
         if (cancelled) return;
         const loadedStory = found || { storyId, title: "Story", totalChapters: 1, currentChapter: 1 };
         const saved = readPosition(readingGroup, storyId);
+        const bookmark = readBookmark(storyId);
         const total = storyChapterLimit(loadedStory);
-        const target = clampChapter(saved.chapter || loadedStory.currentChapter || loadedStory.totalChapters || 1, total);
+        const target = clampChapter(
+          bookmark?.chapterNumber || saved.chapter || loadedStory.currentChapter || loadedStory.totalChapters || 1,
+          total
+        );
         setStory(loadedStory);
         setCurrentStory(found);
         setChapterNumber(target);
@@ -623,10 +643,12 @@ function ChapterReader() {
       .catch(() => {
         if (cancelled) return;
         const saved = readPosition(readingGroup, storyId);
-        const fallbackStory = { storyId, title: "Story", totalChapters: saved.chapter || 1, currentChapter: saved.chapter || 1 };
+        const bookmark = readBookmark(storyId);
+        const landingChapter = bookmark?.chapterNumber || saved.chapter || 1;
+        const fallbackStory = { storyId, title: "Story", totalChapters: landingChapter, currentChapter: landingChapter };
         setStory(fallbackStory);
         setCurrentStory(null);
-        setChapterNumber(saved.chapter || 1);
+        setChapterNumber(landingChapter);
       });
     return () => {
       cancelled = true;
@@ -674,6 +696,17 @@ function ChapterReader() {
     };
     window.addEventListener("scroll", handler, { passive: true });
     requestAnimationFrame(() => {
+      const bookmark = readBookmark(storyId);
+      if (bookmark?.chapterNumber === chapterNumber && bookmark.paragraphIndex != null) {
+        // Paragraph-anchor restore is robust to font-size/layout changes in a
+        // way a scroll PERCENTAGE never is -- exactly the pattern the reshape
+        // flow already uses to scroll back to its own edit point.
+        const node = document.querySelector(`[data-paragraph-index="${bookmark.paragraphIndex}"]`);
+        if (node) {
+          node.scrollIntoView({ behavior: "auto", block: "start" });
+          return;
+        }
+      }
       const saved = readPosition(readingGroup, storyId);
       if (saved.chapter === chapterNumber && saved.scrollPercent) window.scrollTo(0, saved.scrollPercent * (document.documentElement.scrollHeight - window.innerHeight));
     });
@@ -834,15 +867,28 @@ function ChapterReader() {
       <header className="reader-header">
         <button className="icon-button" onClick={() => nav(`/universes/${id}`)}>←</button>
         <div className="reader-title">{story?.title || "Story"}</div>
+        <button className="icon-button" onClick={saveBookmarkHere} aria-label="Save your spot here">🔖</button>
         <button className="icon-button" onClick={() => setMenuOpen(true)}>≡</button>
         <Avatars ids={activeReaders} />
       </header>
+      <AnimatePresence>
+        {bookmarkFlash && (
+          <motion.div
+            className="bookmark-toast"
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+          >
+            Spot saved — come back here next time
+          </motion.div>
+        )}
+      </AnimatePresence>
       <motion.article initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }} className="reading-column">
         <div className="chapter-kicker">Chapter {chapter.chapterNumber}</div>
         <h1>{chapter.chapterTitle}</h1>
         <div className="gold-divider" />
         <ChapterImages chapter={chapter} tier={tier} onHeroLoad={() => setProseReady(true)} />
-        {proseReady && <Prose chapter={chapter} tier={tier} entities={entities} onLongPress={setReshapePromptPoint} onEntityTap={setInteractTarget} pulseFrom={reshapedPulse ? reshapeAnchor?.index : null} />}
+        {proseReady && <Prose chapter={chapter} tier={tier} entities={entities} onLongPress={setReshapePromptPoint} onEntityTap={setInteractTarget} onWordTap={tier !== 1 ? setDefineWord : undefined} pulseFrom={reshapedPulse ? reshapeAnchor?.index : null} />}
         {choiceRevealPending && <div className="choice-sweep" />}
         <ChoicePanel visible={choicesVisible} chapter={chapter} readers={activeReaders} onChoose={choose} showTooltip={showChoiceTooltip} onDismissTooltip={() => setShowChoiceTooltip(false)} />
         {tier !== 1 && <TalkBar mode={talkMode} setMode={setTalkMode} value={talkText} setValue={setTalkText} onSubmit={submitTalk} tier={tier} />}
@@ -851,6 +897,7 @@ function ChapterReader() {
       <ReshapeConfirm point={reshapePromptPoint} onCancel={() => setReshapePromptPoint(null)} onConfirm={() => { setReshapePoint(reshapePromptPoint); setReshapePromptPoint(null); }} />
       <ReshapeSheet point={reshapePoint} tier={tier} onCancel={() => setReshapePoint(null)} onSubmit={submitReshape} />
       <InteractionSheet target={interactTarget} tier={tier} chapter={chapter} universeId={id} storyId={storyId} userId={activeReaders[0] || "jonathan"} onClose={() => setInteractTarget(null)} />
+      <WordDefinition word={defineWord} onClose={() => setDefineWord(null)} />
     </Page>
   );
 }
@@ -897,14 +944,14 @@ function ChapterImages({ chapter, tier, onHeroLoad }) {
   return <motion.img initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5 }} className="chapter-image hero-image" src={images[0].url} alt={images[0].sceneDescription || "Chapter illustration"} onLoad={onHeroLoad} />;
 }
 
-function Prose({ chapter, tier, entities, onLongPress, onEntityTap, pulseFrom }) {
+function Prose({ chapter, tier, entities, onLongPress, onEntityTap, onWordTap, pulseFrom }) {
   const paragraphs = String(chapter.prose || "").split(/\n+/).filter(Boolean);
   const images = (chapter.images || []).filter((img) => img.url);
   return (
     <div className={`prose ${pulseFrom != null ? "reshaped-pulse" : ""}`}>
       {paragraphs.map((p, i) => (
         <React.Fragment key={i}>
-          <InteractiveParagraph text={p} index={i} entities={entities} onLongPress={onLongPress} onEntityTap={onEntityTap} pulsing={pulseFrom != null && i >= pulseFrom} />
+          <InteractiveParagraph text={p} index={i} entities={entities} onLongPress={onLongPress} onEntityTap={onEntityTap} onWordTap={onWordTap} pulsing={pulseFrom != null && i >= pulseFrom} />
           {tier === 1 && images[i % Math.max(1, images.length)] && i > 0 && i % 2 === 1 && (
             <motion.img initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5 }} className="chapter-image" src={images[i % images.length].url} alt={images[i % images.length].sceneDescription || "Chapter illustration"} />
           )}
@@ -914,14 +961,29 @@ function Prose({ chapter, tier, entities, onLongPress, onEntityTap, pulseFrom })
   );
 }
 
-function InteractiveParagraph({ text, index, entities, onLongPress, onEntityTap, pulsing }) {
+function InteractiveParagraph({ text, index, entities, onLongPress, onEntityTap, onWordTap, pulsing }) {
   const timer = useRef(null);
+  // 2026-08-27: a genuine 600ms hold-and-release can still fire a native
+  // click on some browsers. Set the instant the long-press callback actually
+  // fires, checked (and cleared) by the very next word tap -- so a real long
+  // press never also pops the dictionary sheet underneath the reshape prompt.
+  const suppressNextTap = useRef(false);
   function startPress() {
     clearTimeout(timer.current);
-    timer.current = setTimeout(() => onLongPress({ index, text }), 600);
+    timer.current = setTimeout(() => {
+      suppressNextTap.current = true;
+      onLongPress({ index, text });
+    }, 600);
   }
   function endPress() {
     clearTimeout(timer.current);
+  }
+  function handleWordTap(word) {
+    if (suppressNextTap.current) {
+      suppressNextTap.current = false;
+      return;
+    }
+    onWordTap(word);
   }
   return (
     <p
@@ -932,9 +994,41 @@ function InteractiveParagraph({ text, index, entities, onLongPress, onEntityTap,
       onPointerCancel={endPress}
       onPointerLeave={endPress}
     >
-      {renderEntityText(text, entities, onEntityTap)}
+      {renderInteractiveText(text, entities, onEntityTap, onWordTap ? handleWordTap : null)}
     </p>
   );
+}
+
+// 2026-08-27: layered on top of renderEntityText rather than replacing it --
+// entity names (characters, places) keep their existing tap-to-interact
+// behaviour untouched; this only wraps the PLAIN-text segments in between
+// with individually tappable words for the short-tap dictionary. Words under
+// 3 letters are left alone (tapping "a" or "is" for a definition is just
+// noise), and onWordTap being falsy (tier 1 / Talia) makes this a no-op that
+// falls straight back to the original entity-only rendering.
+function renderInteractiveText(text, entities, onEntityTap, onWordTap) {
+  const base = renderEntityText(text, entities, onEntityTap);
+  if (!onWordTap) return base;
+  let key = 10000;
+  return base.flatMap((piece) => {
+    if (typeof piece !== "string") return [piece];
+    return piece.split(/(\s+)/).map((token) => {
+      const clean = token.replace(/[^a-zA-Z']/g, "");
+      if (!clean || clean.length < 3 || /^\s+$/.test(token)) return token;
+      return (
+        <span
+          key={key++}
+          className="tap-word"
+          onClick={(event) => {
+            event.stopPropagation();
+            onWordTap(clean.toLowerCase());
+          }}
+        >
+          {token}
+        </span>
+      );
+    });
+  });
 }
 
 function renderEntityText(text, entities, onEntityTap) {
@@ -1100,6 +1194,60 @@ function InteractionSheet({ target, tier, chapter, universeId, storyId, userId, 
   );
 }
 
+function WordDefinition({ word, onClose }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!word) return undefined;
+    let cancelled = false;
+    setData(null);
+    setError("");
+    execute("storyforge.word.define.v1", { tenantId: "core", userId: "jonathan", word })
+      .then((res) => {
+        if (!cancelled) setData(res);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message || "Could not look that word up.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [word]);
+
+  return (
+    <AnimatePresence>
+      {word && (
+        <motion.div className="bottom-sheet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <button className="sheet-shade" onClick={onClose} />
+          <motion.section className="sheet-panel word-define-panel" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}>
+            <h2>
+              {word}
+              {data?.phonetic ? <span className="word-phonetic"> {data.phonetic}</span> : null}
+            </h2>
+            {!data && !error && <p className="sheet-context">Looking it up...</p>}
+            {error && <p className="sheet-context">{error}</p>}
+            {data?.ok === false && <p className="sheet-context">No definition found for that word.</p>}
+            {data?.definitions?.map((d, i) => (
+              <div className="word-def-item" key={i}>
+                {d.partOfSpeech && <span className="word-pos">{d.partOfSpeech}</span>}
+                <p>{d.text}</p>
+              </div>
+            ))}
+            {data?.synonyms?.length > 0 && (
+              <p className="word-extra"><strong>Similar words:</strong> {data.synonyms.join(", ")}</p>
+            )}
+            {data?.etymology && (
+              <p className="word-extra"><strong>Where it comes from:</strong> {data.etymology}</p>
+            )}
+            <button className="secondary-button" onClick={onClose}>Close</button>
+          </motion.section>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
 function ChapterMenu({ open, onClose, total, current, onJump }) {
   return (
     <AnimatePresence>
@@ -1148,6 +1296,26 @@ function readPosition(group, storyId) {
 
 function writePosition(group, storyId, chapter, scrollPercent) {
   localStorage.setItem(`sf_pos_${group}_${storyId}`, JSON.stringify({ chapter, scrollPercent, lastRead: Date.now() }));
+}
+
+// 2026-08-27: the passive position above is keyed by readingGroup (whoever is
+// marked active right now), which is exactly why it silently breaks across
+// sessions -- Keen reading solo saves under "keen"; Jonathan opening later
+// with a different active-reader selection looks under a different key and
+// finds nothing, landing at the story's official latest chapter instead of
+// where the family actually stopped. An explicit bookmark is keyed by
+// storyId ALONE, survives any change in who's marked active, and represents
+// deliberate "we stopped here" intent rather than ambient scroll tracking.
+function readBookmark(storyId) {
+  try {
+    return JSON.parse(localStorage.getItem(`sf_bookmark_${storyId}`) || "null");
+  } catch {
+    return null;
+  }
+}
+
+function writeBookmark(storyId, bookmark) {
+  localStorage.setItem(`sf_bookmark_${storyId}`, JSON.stringify(bookmark));
 }
 
 async function getChapter(universeId, storyId, chapterNumber) {
