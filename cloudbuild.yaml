@@ -1,0 +1,36 @@
+# Storyforge-app CI/CD. Built 2026-08-27 after discovering this repo had NO
+# deploy pipeline at all -- the one and only prior deploy (2026-05-18) was a
+# one-time manual `gcloud run deploy --source`, and vite.config.js's
+# preview.allowedHosts mismatch (fixed same day as this file) meant the
+# service 403'd every visitor from that first deploy until tonight.
+#
+# The builder pin matters: gcr.io/buildpacks/builder:v1 (Ubuntu 18.04) cannot
+# resolve a Node 22 runtime and fails hard ("invalid Node.js version
+# specified"). google-22 is required for this repo's dependencies as of
+# 2026-08-27 -- if a future Node LTS needs an even newer base, watch this
+# builder tag first before assuming a code-level break.
+steps:
+  - id: build-and-push
+    name: 'gcr.io/k8s-skaffold/pack'
+    entrypoint: 'pack'
+    args:
+      - build
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/storyforge-app:$SHORT_SHA'
+      - '--builder=gcr.io/buildpacks/builder:google-22'
+      - '--publish'
+
+  - id: deploy
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - storyforge-app
+      - '--image=us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/storyforge-app:$SHORT_SHA'
+      - '--region=us-central1'
+      - '--platform=managed'
+      - '--quiet'
+
+timeout: '900s'
+options:
+  logging: CLOUD_LOGGING_ONLY
