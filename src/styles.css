@@ -240,6 +240,7 @@ h3 {
 
 .reader-header {
   position: fixed;
+  top: env(safe-area-inset-top);
   left: 24px;
   right: 24px;
   width: auto;
