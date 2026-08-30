@@ -1,4 +1,4 @@
-const CACHE = "storyforge-v1";
+const CACHE = "storyforge-v2";
 const CHAPTER_CACHE = "storyforge-chapters-v1";
 const SHELL = ["/", "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"];
 
@@ -7,13 +7,43 @@ self.addEventListener("install", (event) => {
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(self.clients.claim());
+  // Drop caches from older SW versions, then take over open clients.
+  const keep = new Set([CACHE, CHAPTER_CACHE]);
+  event.waitUntil(
+    caches.keys()
+      .then((names) => Promise.all(names.filter((n) => !keep.has(n)).map((n) => caches.delete(n))))
+      .then(() => self.clients.claim())
+  );
 });
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET") return;
-  if (url.pathname === "/" || url.pathname.startsWith("/assets/") || url.pathname.startsWith("/icons/")) {
+  if (url.pathname === "/") {
+    // NETWORK-FIRST for the shell. Cache-first here meant a deploy only
+    // reached an installed PWA on the second full launch afterward — three
+    // fixes shipped 2026-08-30 were all "not working" for an hour each
+    // because the phone kept serving yesterday's HTML. The shell carries the
+    // hashed asset references, so it must be fresh; the cache is only the
+    // offline fallback.
+    event.respondWith(
+      caches.open(CACHE).then(async (cache) => {
+        try {
+          const response = await fetch(event.request);
+          if (response.ok) cache.put(event.request, response.clone());
+          return response;
+        } catch (err) {
+          const cached = await cache.match(event.request);
+          if (cached) return cached;
+          throw err;
+        }
+      })
+    );
+    return;
+  }
+  if (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/icons/")) {
+    // Cache-first stays CORRECT here: filenames are content-hashed, so a
+    // cached asset is immutable and a fresh shell always references new names.
     event.respondWith(
       caches.open(CACHE).then(async (cache) => {
         const cached = await cache.match(event.request);
