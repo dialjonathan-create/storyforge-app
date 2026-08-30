@@ -596,7 +596,9 @@ function ChapterReader() {
   const [reshapePoint, setReshapePoint] = useState(null);
   const [reshapeAnchor, setReshapeAnchor] = useState(null);
   const [interactTarget, setInteractTarget] = useState(null);
-  const [talkMode, setTalkMode] = useState("ask");
+  const [chatThread, setChatThread] = useState(null);
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatSavedChapter, setChatSavedChapter] = useState(false);
   const [talkText, setTalkText] = useState("");
   const [proseReady, setProseReady] = useState(true);
   const [reshapedPulse, setReshapedPulse] = useState(false);
@@ -838,14 +840,46 @@ function ChapterReader() {
     const text = talkText.trim();
     if (!text) return;
     setTalkText("");
-    if (talkMode === "change") {
-      const point = paragraphAtScroll(chapter);
-      setReshapePoint(point);
-      await submitReshape(text, point);
-      return;
+    await sendChatMessage(text);
+  }
+
+  // One chat entry. storyforge.converse.v1 carries the world bible, canon,
+  // character history and the persisted conversation thread, and it routes
+  // server-side: plain discussion stays a conversation; a chapter, edit,
+  // canon mark or bible update only happens when the model deliberately
+  // emits a write tag. The old Ask/Change toggle forced that routing choice
+  // onto the reader at the keyboard, with Ask landing in the stateless
+  // per-entity Q&A and Change firing an immediate reshape.
+  async function sendChatMessage(text) {
+    setChatThread((current) => [...(current || []), { role: "user", content: text }]);
+    setChatBusy(true);
+    try {
+      const res = await execute("storyforge.converse.v1", {
+        tenantId: "core",
+        userId: activeReaders[0] || "jonathan",
+        universeId: id,
+        storyId,
+        message: text,
+        requestedBy: activeReaders[0] || "jonathan",
+      });
+      const kind = res.responseType || "conversation";
+      setChatThread((current) => [...(current || []), { role: "assistant", content: res.response || "(the story had no words)", kind }]);
+      if (kind === "chapter" || kind === "edit" || kind === "chapter_edit") setChatSavedChapter(true);
+    } catch (error) {
+      setChatThread((current) => [...(current || []), { role: "assistant", content: error.message || "The story didn't answer. Try again.", kind: "error" }]);
+    } finally {
+      setChatBusy(false);
     }
-    const target = inferEntityTarget(text, entities) || entities[0] || { name: story?.title || "the story", type: "setting", context: "" };
-    setInteractTarget({ ...target, pendingQuestion: text });
+  }
+
+  function closeChat() {
+    setChatThread(null);
+    if (chatSavedChapter) {
+      setChatSavedChapter(false);
+      getChapter(id, storyId, chapterNumber)
+        .then((res) => setChapter(res))
+        .catch(() => {});
+    }
   }
 
   if (!chapter || !chapterNumber) return <ReadingLoading text="Turning the page..." />;
@@ -891,11 +925,12 @@ function ChapterReader() {
         {proseReady && <Prose chapter={chapter} tier={tier} entities={entities} onLongPress={setReshapePromptPoint} onEntityTap={setInteractTarget} onWordTap={tier !== 1 ? setDefineWord : undefined} pulseFrom={reshapedPulse ? reshapeAnchor?.index : null} />}
         {choiceRevealPending && <div className="choice-sweep" />}
         <ChoicePanel visible={choicesVisible} chapter={chapter} readers={activeReaders} onChoose={choose} showTooltip={showChoiceTooltip} onDismissTooltip={() => setShowChoiceTooltip(false)} />
-        {tier !== 1 && <TalkBar mode={talkMode} setMode={setTalkMode} value={talkText} setValue={setTalkText} onSubmit={submitTalk} tier={tier} />}
+        {tier !== 1 && <TalkBar value={talkText} setValue={setTalkText} onSubmit={submitTalk} />}
       </motion.article>
       <ChapterMenu open={menuOpen} onClose={() => setMenuOpen(false)} total={storyChapterLimit(story, chapter.chapterNumber)} current={chapterNumber} onJump={(n) => { setMenuOpen(false); setChapterNumber(n); window.scrollTo(0, 0); }} />
       <ReshapeConfirm point={reshapePromptPoint} onCancel={() => setReshapePromptPoint(null)} onConfirm={() => { setReshapePoint(reshapePromptPoint); setReshapePromptPoint(null); }} />
       <ReshapeSheet point={reshapePoint} tier={tier} onCancel={() => setReshapePoint(null)} onSubmit={submitReshape} />
+      <StoryChatSheet thread={chatThread} busy={chatBusy} onSend={sendChatMessage} onClose={closeChat} />
       <InteractionSheet target={interactTarget} tier={tier} chapter={chapter} universeId={id} storyId={storyId} userId={activeReaders[0] || "jonathan"} onClose={() => setInteractTarget(null)} />
       <WordDefinition word={defineWord} onClose={() => setDefineWord(null)} />
     </Page>
@@ -1089,16 +1124,50 @@ function choicePrompt(readers) {
   return "What happens next?";
 }
 
-function TalkBar({ mode, setMode, value, setValue, onSubmit, tier }) {
+function TalkBar({ value, setValue, onSubmit }) {
   return (
     <form className="story-talk" onSubmit={onSubmit}>
-      <div className="talk-toggle">
-        <button type="button" className={mode === "ask" ? "active" : ""} onClick={() => setMode("ask")}>Ask</button>
-        <button type="button" className={mode === "change" ? "active" : ""} onClick={() => setMode("change")}>Change</button>
-      </div>
-      <input value={value} onChange={(event) => setValue(event.target.value)} placeholder={tier === 2 ? "Ask a character or change the story..." : "Talk to the story..."} />
+      <input value={value} onChange={(event) => setValue(event.target.value)} placeholder="Talk to the story..." />
       <button type="submit" className="gold-button">Send</button>
     </form>
+  );
+}
+
+function StoryChatSheet({ thread, busy, onSend, onClose }) {
+  const [text, setText] = useState("");
+  const scrollRef = useRef(null);
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [thread, busy]);
+  if (!thread) return null;
+  return (
+    <motion.div className="bottom-sheet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+      <button className="sheet-shade" onClick={onClose} />
+      <motion.section className="sheet-panel interaction-panel" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}>
+        <h2>Talk to the story</h2>
+        <div className="chat-scroll" ref={scrollRef}>
+          {thread.map((message, index) => (
+            <div key={index} className={message.role === "user" ? "chat-line chat-user" : "chat-line chat-story"}>
+              {message.kind === "chapter" || message.kind === "edit" || message.kind === "chapter_edit" ? <em>{message.content}</em> : message.content}
+            </div>
+          ))}
+          {busy && <div className="chat-line chat-story chat-busy">The story is thinking…</div>}
+        </div>
+        <form
+          className="chat-compose"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const q = text.trim();
+            if (!q || busy) return;
+            setText("");
+            onSend(q);
+          }}
+        >
+          <input value={text} onChange={(event) => setText(event.target.value)} placeholder="Say more..." />
+          <button type="submit" className="gold-button" disabled={busy}>Send</button>
+        </form>
+      </motion.section>
+    </motion.div>
   );
 }
 
