@@ -863,7 +863,10 @@ function ChapterReader() {
         requestedBy: activeReaders[0] || "jonathan",
       });
       const kind = res.responseType || "conversation";
-      setChatThread((current) => [...(current || []), { role: "assistant", content: res.response || "(the story had no words)", kind }]);
+      // converse.v1 returns its prose under `message` (read from the handler's
+      // return statement 2026-08-30, after shipping `res.response` unverified
+      // and turning every reply into "(the story had no words)").
+      setChatThread((current) => [...(current || []), { role: "assistant", content: res.message || res.response || "(the story had no words)", kind }]);
       if (kind === "chapter" || kind === "edit" || kind === "chapter_edit") setChatSavedChapter(true);
     } catch (error) {
       setChatThread((current) => [...(current || []), { role: "assistant", content: error.message || "The story didn't answer. Try again.", kind: "error" }]);
