@@ -954,9 +954,18 @@ function clampChapter(chapter, total) {
 
 function extractEntities(data, tier = 3) {
   const characters = (data?.characters || []).map((c) => ({ name: c.name || c.characterId, type: "character", description: c.description || c.role || "" })).filter((x) => x.name);
-  if (tier === 1) return characters;
+  // The family readers ARE characters in these stories, but they live as
+  // reader ids, not universe character docs -- so their names in prose fell
+  // through entity linking to the word-tap handler, and short-pressing
+  // "Keen" opened the dictionary definition of "keen" (live 2026-08-29).
+  const known = new Set(characters.map((c) => c.name.toLowerCase()));
+  const family = FAMILY
+    .filter((member) => !known.has(member.displayName.toLowerCase()))
+    .map((member) => ({ name: member.displayName, type: "character", description: `${member.displayName} — one of the story's own readers.` }));
+  const cast = [...characters, ...family];
+  if (tier === 1) return cast;
   const locations = ((data?.bible || {}).locations || []).map((l) => ({ name: l.name || String(l), type: "setting", description: l.description || "" })).filter((x) => x.name && x.name.length > 2);
-  return [...characters, ...locations].sort((a, b) => b.name.length - a.name.length).slice(0, 30);
+  return [...cast, ...locations].sort((a, b) => b.name.length - a.name.length).slice(0, 34);
 }
 
 function inferEntityTarget(text, entities) {
@@ -1066,13 +1075,32 @@ function renderInteractiveText(text, entities, onEntityTap, onWordTap) {
   });
 }
 
+function findEntityIndex(haystack, name) {
+  // Word-bounded, and when the entity name is capitalized the prose
+  // occurrence must be capitalized too: "Keen smiled" links, "a keen eye"
+  // does not, and "Keenness" never half-matches.
+  const lowerHay = haystack.toLowerCase();
+  const lowerName = String(name).toLowerCase();
+  const isLetter = (ch) => /[A-Za-z\u00C0-\u024F]/.test(ch || "");
+  let from = 0;
+  while (from <= lowerHay.length - lowerName.length) {
+    const idx = lowerHay.indexOf(lowerName, from);
+    if (idx < 0) return -1;
+    const bounded = !isLetter(haystack[idx - 1]) && !isLetter(haystack[idx + lowerName.length]);
+    const caseOk = name[0] !== name[0].toLowerCase() ? haystack[idx] === name[0] : true;
+    if (bounded && caseOk) return idx;
+    from = idx + 1;
+  }
+  return -1;
+}
+
 function renderEntityText(text, entities, onEntityTap) {
   let remaining = text;
   const out = [];
   let key = 0;
   while (remaining) {
     const match = (entities || []).map((entity) => {
-      const idx = remaining.toLowerCase().indexOf(String(entity.name).toLowerCase());
+      const idx = findEntityIndex(remaining, String(entity.name));
       return idx >= 0 ? { entity, idx } : null;
     }).filter(Boolean).sort((a, b) => a.idx - b.idx || b.entity.name.length - a.entity.name.length)[0];
     if (!match) {
