@@ -1326,3 +1326,35 @@ h3 {
 .word-extra strong {
   color: var(--text-primary);
 }
+
+
+/* One-chat story conversation (storyforge.converse.v1) */
+.chat-scroll {
+  max-height: 46vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0;
+  padding-right: 4px;
+}
+.chat-line {
+  max-width: 88%;
+  padding: 10px 14px;
+  border-radius: 14px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.chat-user {
+  align-self: flex-end;
+  background: rgba(217, 142, 62, 0.18);
+  border: 1px solid rgba(217, 142, 62, 0.45);
+}
+.chat-story {
+  align-self: flex-start;
+  background: rgba(44, 135, 172, 0.14);
+  border: 1px solid rgba(44, 135, 172, 0.35);
+}
+.chat-busy { opacity: 0.75; font-style: italic; }
+.chat-compose { display: flex; gap: 8px; }
+.chat-compose input { flex: 1; }
