@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import "./styles.css";
+import NarrationPanel from "./NarrationPanel";
 
 const ABILITY_URL = import.meta.env.VITE_ABILITY_URL || "https://ability-supervisor-service-818269465014.us-central1.run.app";
 // Scoped product token (2026-08-22): authorizes story.* / storyforge.* only.
@@ -924,6 +925,7 @@ function ChapterReader() {
         <div className="chapter-kicker">Chapter {chapter.chapterNumber}</div>
         <h1>{chapter.chapterTitle}</h1>
         <div className="gold-divider" />
+        <NarrationPanel chapter={chapter} />
         <ChapterImages chapter={chapter} tier={tier} onHeroLoad={() => setProseReady(true)} />
         {proseReady && <Prose chapter={chapter} tier={tier} entities={entities} onLongPress={setReshapePromptPoint} onEntityTap={setInteractTarget} onWordTap={tier !== 1 ? setDefineWord : undefined} pulseFrom={reshapedPulse ? reshapeAnchor?.index : null} />}
         {choiceRevealPending && <div className="choice-sweep" />}
