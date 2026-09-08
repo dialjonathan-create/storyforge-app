@@ -1,3 +1,5 @@
+# SUPERSEDED BY .github/workflows/deploy.yml
+#
 # Storyforge-app CI/CD. Built 2026-08-27 after discovering this repo had NO
 # deploy pipeline at all -- the one and only prior deploy (2026-05-18) was a
 # one-time manual `gcloud run deploy --source`, and vite.config.js's

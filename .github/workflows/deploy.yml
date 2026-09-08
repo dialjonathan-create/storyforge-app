@@ -1,0 +1,50 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: [self-hosted, ability-core]
+
+    steps:
+      - name: Get pre-deploy index.js filename
+        run: |
+          URL=$(gcloud run services describe storyforge-app --region us-central1 --format 'value(status.url)')
+          PRE_INDEX=$(curl -s "$URL" | grep -o '/assets/index-[^"]*\.js' | head -n 1 || true)
+          echo "PRE_INDEX=$PRE_INDEX" >> $GITHUB_ENV
+          echo "Pre-deploy index is $PRE_INDEX"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npx vitest run
+
+      - name: Build Docker image
+        run: docker build -t us-central1-docker.pkg.dev/beaming-opus-481400-t9/cloud-run-source-deploy/storyforge-app:${GITHUB_SHA::7} .
+
+      - name: Push Docker image
+        run: docker push us-central1-docker.pkg.dev/beaming-opus-481400-t9/cloud-run-source-deploy/storyforge-app:${GITHUB_SHA::7}
+
+      - name: Deploy to Cloud Run
+        run: gcloud run deploy storyforge-app --image us-central1-docker.pkg.dev/beaming-opus-481400-t9/cloud-run-source-deploy/storyforge-app:${GITHUB_SHA::7} --region us-central1 --platform managed --quiet
+
+      - name: Verify deployment
+        run: |
+          URL=$(gcloud run services describe storyforge-app --region us-central1 --format 'value(status.url)')
+          POST_INDEX=$(curl -s "$URL" | grep -o '/assets/index-[^"]*\.js' | head -n 1 || true)
+          echo "Post-deploy index is $POST_INDEX"
+          if [ -z "$POST_INDEX" ]; then
+            echo "Failed to extract index.js filename"
+            exit 1
+          fi
+          if [ "$PRE_INDEX" == "$POST_INDEX" ]; then
+            echo "Deploy failed: index.js filename did not change ($PRE_INDEX == $POST_INDEX)"
+            exit 1
+          fi
