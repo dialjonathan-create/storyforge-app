@@ -27,6 +27,7 @@ export default function NarrationPanel({ chapter }) {
   const isPlayingRef = useRef(false);
   const currentIdxRef = useRef(0);
   const abortControllers = useRef(new Set());
+  const playRunRef = useRef(0);
 
   // Initialization
   useEffect(() => {
@@ -71,6 +72,7 @@ export default function NarrationPanel({ chapter }) {
   }, [isPlaying, currentIdx, segments]);
 
   const stop = () => {
+    playRunRef.current += 1;
     setIsPlaying(false);
     if (currentAudioRef.current) {
       currentAudioRef.current.pause();
@@ -83,6 +85,7 @@ export default function NarrationPanel({ chapter }) {
   };
 
   const pause = () => {
+    playRunRef.current += 1;
     setIsPlaying(false);
     if (currentAudioRef.current) {
       currentAudioRef.current.pause();
@@ -136,6 +139,7 @@ export default function NarrationPanel({ chapter }) {
       return;
     }
 
+    const runId = ++playRunRef.current;
     setCurrentIdx(idx);
     setIsPlaying(true);
     setError(null);
@@ -163,7 +167,10 @@ export default function NarrationPanel({ chapter }) {
       }
     }
 
-    if (!isPlayingRef.current || currentIdxRef.current !== idx) return;
+    // A newer play/pause/stop started while we were fetching: yield to it.
+    // (Refs sync in an effect AFTER render, so comparing them here fails
+    // synchronously on the prefetched fast path and killed chained playback.)
+    if (runId !== playRunRef.current) return;
 
     if (currentAudioRef.current) {
         currentAudioRef.current.pause();
@@ -178,6 +185,7 @@ export default function NarrationPanel({ chapter }) {
       prefetchCache.current.delete(idx);
 
       const nextIdx = idx + 1;
+      if (runId !== playRunRef.current) return;
       if (nextIdx < segments.length) {
         playFrom(nextIdx);
       } else {
