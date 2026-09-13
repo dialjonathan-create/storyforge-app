@@ -888,23 +888,38 @@ function ChapterReader() {
       if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 150) queueChoiceReveal();
     };
     window.addEventListener("scroll", handler, { passive: true });
-    requestAnimationFrame(() => {
-      const bookmark = readBookmark(storyId);
-      if (bookmark?.chapterNumber === chapterNumber && bookmark.paragraphIndex != null) {
-        // Paragraph-anchor restore is robust to font-size/layout changes in a
-        // way a scroll PERCENTAGE never is -- exactly the pattern the reshape
-        // flow already uses to scroll back to its own edit point.
-        const node = document.querySelector(`[data-paragraph-index="${bookmark.paragraphIndex}"]`);
-        if (node) {
-          node.scrollIntoView({ behavior: "auto", block: "start" });
-          return;
-        }
-      }
-      const saved = readPosition(readingGroup, storyId);
-      if (saved.chapter === chapterNumber && saved.scrollPercent) window.scrollTo(0, saved.scrollPercent * (document.documentElement.scrollHeight - window.innerHeight));
-    });
     return () => window.removeEventListener("scroll", handler);
   }, [readingGroup, storyId, chapterNumber]);
+
+  // Restoring where you were, AFTER the chapter is on the page.
+  //
+  // This used to run one animation frame after `chapterNumber` changed — which
+  // is before the chapter has been fetched, so the reader was still showing
+  // "Turning the page...". There were no [data-paragraph-index] nodes to find
+  // and the document was a loading screen one viewport tall, so the bookmark
+  // branch missed and the percentage branch scrolled to roughly zero. Both
+  // restores were dead, every time, which is why 🔖 looked like it did nothing
+  // and why the reader always reopened at the top.
+  //
+  // Now it waits for a chapter AND for the prose to actually be rendered
+  // (tier 2 holds it back behind a hero image), and runs once per chapter.
+  const restoredFor = useRef(null);
+  useEffect(() => {
+    if (!chapter || !chapterNumber || !proseReady) return;
+    const key = `${storyId}:${chapterNumber}`;
+    if (restoredFor.current === key) return;
+    restoredFor.current = key;
+    requestAnimationFrame(() => {
+      // Someone who has already started reading during the load is not asking
+      // to be sent somewhere else.
+      if (window.scrollY > 40) return;
+      restoreReadingPosition({
+        bookmark: readBookmark(storyId),
+        saved: readPosition(readingGroup, storyId),
+        chapterNumber,
+      });
+    });
+  }, [chapter, proseReady, readingGroup, storyId, chapterNumber]);
 
   function queueChoiceReveal() {
     if (choicesVisible || choiceRevealPending) return;
@@ -2094,6 +2109,36 @@ function useSwipe(onSwipe) {
       window.removeEventListener("touchend", end);
     };
   }, [onSwipe]);
+}
+
+/**
+ * Put the reader back where they were. Returns what it did, which is the only
+ * way to tell "restored" apart from "there was nothing to restore" apart from
+ * "the page was not on screen yet" — and it was silently the third one.
+ *
+ * A paragraph anchor is tried first and a scroll percentage second. The anchor
+ * survives a font-size change, a reflow, and a chapter being edited underneath
+ * it; a percentage survives none of those, and is only a fallback because it is
+ * what gets written on every scroll without the reader doing anything.
+ */
+export function restoreReadingPosition({ bookmark, saved, chapterNumber, doc = document, win = window }) {
+  if (bookmark && bookmark.chapterNumber === chapterNumber && bookmark.paragraphIndex != null) {
+    const node = doc.querySelector(`[data-paragraph-index="${bookmark.paragraphIndex}"]`);
+    if (node) {
+      node.scrollIntoView({ behavior: "auto", block: "start" });
+      return "bookmark";
+    }
+  }
+  if (saved && saved.chapter === chapterNumber && saved.scrollPercent) {
+    const scrollable = doc.documentElement.scrollHeight - win.innerHeight;
+    // Nothing to scroll means the chapter is not laid out yet. Scrolling to
+    // `percent * 0` would land at the top and be indistinguishable from having
+    // no memory at all, which is exactly the bug this function exists to end.
+    if (scrollable <= 0) return "not-laid-out";
+    win.scrollTo(0, saved.scrollPercent * scrollable);
+    return "position";
+  }
+  return "none";
 }
 
 function readPosition(group, storyId) {
