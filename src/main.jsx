@@ -1046,7 +1046,10 @@ function ChapterReader() {
       // converse.v1 returns its prose under `message` (read from the handler's
       // return statement 2026-08-30, after shipping `res.response` unverified
       // and turning every reply into "(the story had no words)").
-      setChatThread((current) => [...(current || []), { role: "assistant", content: res.message || res.response || "(the story had no words)", kind }]);
+      // suggestedReplies is [] on most turns and the row simply does not render.
+      // A server that predates the field sends nothing, which is the same thing.
+      const suggested = Array.isArray(res.suggestedReplies) ? res.suggestedReplies : [];
+      setChatThread((current) => [...(current || []), { role: "assistant", content: res.message || res.response || "(the story had no words)", kind, suggestedReplies: suggested }]);
       if (kind === "chapter" || kind === "edit" || kind === "chapter_edit") setChatSavedChapter(true);
     } catch (error) {
       setChatThread((current) => [...(current || []), { role: "assistant", content: error.message || "The story didn't answer. Try again.", kind: "error" }]);
@@ -1401,6 +1404,40 @@ function renderMarkdown(source) {
   return blocks;
 }
 
+/** Tappable answers to the question the editor just asked.
+ *
+ * The editor routinely ends a turn with two or three enumerable answers written
+ * as prose -- "Does that direction sound right? Or do you want to lean harder
+ * into her apprenticeship?" -- and answering it meant typing a sentence with a
+ * thumb. `storyforge.converse.v1` now offers them in `suggestedReplies`; this
+ * renders whatever it gets.
+ *
+ * Only on the LAST assistant turn. Chips halfway up a transcript are answers to
+ * a question that has already been answered, and tapping one would be
+ * confusing rather than quick.
+ *
+ * Free text never goes away. The composer sits directly below this and a chip
+ * is a shortcut, not a menu.
+ */
+function SuggestedReplies({ replies, onPick, disabled }) {
+  if (!replies?.length) return null;
+  return (
+    <div className="suggested-replies" role="group" aria-label="Suggested replies">
+      {replies.map((reply, index) => (
+        <button
+          key={index}
+          type="button"
+          className="suggested-reply"
+          disabled={disabled}
+          onClick={() => onPick(reply)}
+        >
+          {reply}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function ChoicePanel({ visible, chapter, readers, onChoose, showTooltip, onDismissTooltip }) {
   if (!chapter?.choices?.length || chapter.choiceMade) return null;
   return (
@@ -1595,7 +1632,8 @@ function StoryChatSheet({ thread, busy, onSend, onClose }) {
             the bottom and there was nothing to type into. */}
         <div className="chat-scroll" ref={scrollRef}>
           {thread.map((message, index) => (
-            <div key={index} className={message.role === "user" ? "chat-line chat-user" : "chat-line chat-story"}>
+            <React.Fragment key={index}>
+            <div className={message.role === "user" ? "chat-line chat-user" : "chat-line chat-story"}>
               {/* The person's own turn stays exactly as they typed it: they know
                   what they wrote, and reinterpreting their asterisks would be
                   surprising. Chapter and edit kinds keep their <em>. Only the
@@ -1606,6 +1644,17 @@ function StoryChatSheet({ thread, busy, onSend, onClose }) {
                   ? <em>{message.content}</em>
                   : <div className="chat-markdown">{renderMarkdown(message.content)}</div>}
             </div>
+            {index === thread.length - 1 && message.role === "assistant" && (
+              <SuggestedReplies
+                replies={message.suggestedReplies}
+                disabled={busy}
+                onPick={(reply) => {
+                  setText("");
+                  onSend(reply);
+                }}
+              />
+            )}
+            </React.Fragment>
           ))}
           {busy && <div className="chat-line chat-story chat-busy">The story is thinking…</div>}
         </div>
@@ -2203,7 +2252,7 @@ function Root() {
 // Exported for tests. The young-reader flow had no automated coverage at all,
 // which is how a dead end in the path a child uses survived unnoticed; a flow
 // that a seven-year-old walks should not be the least-tested screen in the app.
-export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown };
+export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies };
 
 createRoot(document.getElementById("root")).render(<Root />);
 
