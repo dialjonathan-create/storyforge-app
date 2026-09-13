@@ -11,10 +11,15 @@ export function stripHtmlComments(text) {
   return String(text).replace(/<!--[\s\S]*?-->/g, "").trim();
 }
 
+const DEFAULT_VOICE_ID = "af_heart";
+
 export default function NarrationPanel({ chapter }) {
   const [voices, setVoices] = useState([]);
+  // The id the synth API wants, not anything a person should ever read. The
+  // human-readable name and the picker belong in the settings sheet; until that
+  // exists this is a default nobody sees.
   const [selectedVoice, setSelectedVoice] = useState(
-    localStorage.getItem("storyforge_narrator_voice") || "af_heart"
+    () => localStorage.getItem("storyforge_narrator_voice") || DEFAULT_VOICE_ID
   );
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentIdx, setCurrentIdx] = useState(0);
@@ -218,34 +223,49 @@ export default function NarrationPanel({ chapter }) {
     }
   };
 
+  // 2026-09-13: the panel was `background: "#f0f0f0"` as an inline style, with
+  // zero narration rules in the stylesheet. That grey box is the only element
+  // in the reading view outside the app's palette, and it makes the whole page
+  // look unfinished. Every colour here is now a token; there is not a hex in
+  // this file.
+  //
+  // This is the CURRENT player restyled, not the rebuilt one. The whole-chapter
+  // render, the offsets table, the scrubber and MediaSession are a separate
+  // track that has not started -- there is no server-side audio capability at
+  // all yet. What this does is stop the reading view looking broken while that
+  // is built.
+  const ready = segments.length > 0;
+  const position = ready ? `${currentIdx + 1} of ${segments.length}` : "Preparing narration";
+
   return (
-    <div className="narration-panel" style={{ padding: "10px", background: "#f0f0f0", borderRadius: "8px", margin: "10px 0", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-      <button onClick={togglePlay} className="play-button" style={{ padding: "5px 15px", cursor: "pointer" }}>
-        {isPlaying ? "Pause" : "Play"}
-      </button>
-      <button onClick={() => { stop(); setCurrentIdx(0); }} className="stop-button" style={{ padding: "5px 15px", cursor: "pointer" }}>
-        Stop
-      </button>
-
-      <select
-        value={selectedVoice}
-        onChange={(e) => setSelectedVoice(e.target.value)}
-        style={{ padding: "5px" }}
+    <div className="narration-bar" role="group" aria-label="Narration">
+      <button
+        type="button"
+        onClick={togglePlay}
+        className="narration-play"
+        disabled={!ready}
+        aria-label={isPlaying ? "Pause narration" : "Play narration"}
       >
-        {voices.map(v => (
-          <option key={v} value={v}>{v}</option>
-        ))}
-      </select>
+        <span aria-hidden="true">{isPlaying ? "\u23F8" : "\u25B6"}</span>
+      </button>
 
-      <span style={{ fontSize: "0.9em", color: "#555" }}>
-        {segments.length > 0 ? `Para ${currentIdx + 1} of ${segments.length}` : "No content"}
-      </span>
+      <div className="narration-meta">
+        <span className="narration-title">{chapter?.chapterTitle || "Narration"}</span>
+        {/* Paragraphs, not seconds -- this player has no duration to report
+            until the chapter is rendered as one file. Saying "1 of 42" is true;
+            a fake timecode would not be. */}
+        <span className="narration-position">{ready ? `Paragraph ${position}` : position}</span>
+      </div>
 
-      {error && (
-        <span style={{ color: "red", fontSize: "0.9em", marginLeft: "auto" }}>
-          {error}
-        </span>
+      {isPlaying && (
+        <button type="button" onClick={() => { stop(); setCurrentIdx(0); }} className="narration-stop" aria-label="Stop narration">
+          <span aria-hidden="true">\u25A0</span>
+        </button>
       )}
+
+      {!ready && <span className="narration-working" aria-hidden="true" />}
+
+      {error && <span className="narration-error" role="alert">{error}</span>}
     </div>
   );
 }
