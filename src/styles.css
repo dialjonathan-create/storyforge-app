@@ -721,7 +721,9 @@ h3 {
 .prose {
   color: var(--text-primary);
   font-family: "Crimson Pro", Georgia, serif;
-  font-size: 20px;
+  /* --prose-scale is published by the reader page from the reading group's
+     saved text size. Absent (every other surface) it is 1, so this is 20px. */
+  font-size: calc(20px * var(--prose-scale, 1));
   letter-spacing: 0.01em;
   line-height: 1.9;
 }
@@ -1199,7 +1201,7 @@ h3 {
   }
 
   .prose {
-    font-size: 20px;
+    font-size: calc(20px * var(--prose-scale, 1));
   }
 
   .reader-header {
@@ -1248,7 +1250,7 @@ h3 {
   }
 
   .prose {
-    font-size: 20px;
+    font-size: calc(20px * var(--prose-scale, 1));
   }
 }
 
@@ -1684,4 +1686,38 @@ h3 {
   flex-direction: column;
   gap: 0.9rem;
   text-align: left;
+}
+
+
+/* --- Text size control -------------------------------------------------- */
+
+.text-size {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 18px;
+}
+
+.text-size-step {
+  display: grid;
+  place-items: center;
+  min-width: 56px;
+  height: 48px;
+  padding: 0 14px;
+  border: 1px solid rgba(240, 230, 211, 0.14);
+  border-radius: 999px;
+  background: rgba(29, 45, 62, 0.78);
+  color: var(--text-primary);
+  font-family: Cinzel, Georgia, serif;
+}
+
+.text-size-step:first-child { font-size: 0.9rem; }
+.text-size-step:last-child { font-size: 1.25rem; }
+
+.text-size-label {
+  flex: 1 1 auto;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
 }
