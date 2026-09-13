@@ -935,17 +935,10 @@ h3 {
   margin-top: 12px;
 }
 
-/* The talk bar is a Composer now. The old rule declared THREE grid columns
-   (auto 1fr auto) for two children, so the input landed in the `auto` column and
-   sized to its own content while the Send button took the `1fr`. That is the
-   small square and the full-width button - a template with one column too many,
-   not a styling preference. */
-.story-talk {
-  position: sticky;
-  bottom: max(14px, env(safe-area-inset-bottom));
-  z-index: 30;
-  margin-top: 36px;
-}
+/* `.story-talk` used to live here. It was the reader's talk bar: a compose row
+   pinned to the bottom of the reading view, opening the same chat sheet the 💬
+   in the header opens, and taking about a third of the page to do it. Removed
+   2026-09-13 — the reading view is prose. */
 
 .reshape-popover {
   position: fixed;
@@ -1216,10 +1209,6 @@ h3 {
 }
 
 @media (max-width: 720px) {
-  .story-talk {
-    grid-template-columns: 1fr;
-  }
-
   .interaction-form {
     grid-template-columns: 1fr;
   }
@@ -1371,6 +1360,14 @@ h3 {
   flex: 1 1 auto;
   min-width: 0;            /* without this a long unbroken word makes the flex
                               item wider than the row and pushes the button out */
+  /* 2026-09-13: the empty composer rendered about five lines tall — roughly
+     forty percent of the screen. Not the resize logic: the global
+     `textarea { min-height: 190px }` rule, written for the full-page draft
+     boxes, applied here too. `min-height` beats both the `rows` attribute and
+     the inline `height` the grow effect sets, so nothing downstream could
+     shrink it. These two lines are the whole fix. */
+  min-height: 0;
+  height: auto;
   border: 0;
   outline: none;
   resize: none;
