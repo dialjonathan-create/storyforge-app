@@ -1358,3 +1358,59 @@ h3 {
 .chat-busy { opacity: 0.75; font-style: italic; }
 .chat-compose { display: flex; gap: 8px; }
 .chat-compose input { flex: 1; }
+
+/* Genre and audience are free text with suggestions, never a select. The chips
+   fill the field; anything can be typed over them. See GENRE_SUGGESTIONS in
+   main.jsx for why there is no enum anywhere in this path. */
+.suggest-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: 100%;
+}
+
+.suggest-field label {
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.suggest-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.suggest-chips button {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.82rem;
+  padding: 0.3rem 0.7rem;
+}
+
+.suggest-chips button:hover,
+.suggest-chips button:focus-visible {
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.suggest-chips button.active {
+  background: rgba(212, 175, 55, 0.18);
+  border-color: rgba(212, 175, 55, 0.6);
+}
+
+/* An absent genre reads as absent. */
+.muted {
+  opacity: 0.55;
+  font-style: italic;
+}
+
+.meta-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  text-align: left;
+}

@@ -41,6 +41,93 @@ function userFor(id, users = FAMILY) {
   return users.find((u) => u.userId === id) || FAMILY.find((u) => u.userId === id) || { userId: id, displayName: id, avatar: "✦" };
 }
 
+// Genre is FREE TEXT, deliberately, and these are suggestions rather than
+// options. `_missing_creation_metadata` in the engine checks only that the
+// value is non-empty after str().strip() -- there is no enum, no allowlist and
+// no validation of what a genre may be. "gothic western with cosmic horror" is
+// a valid genre today and needs no schema change. A <select> here would be the
+// only thing in the whole stack that narrows it, so there isn't one: these fill
+// the field and can be typed straight over.
+const GENRE_SUGGESTIONS = [
+  "family adventure",
+  "fantasy",
+  "science fiction",
+  "mystery",
+  "historical fiction",
+  "fairy tale",
+  "speculative fiction",
+];
+
+// Same rule for audience: suggestions, not a closed set. The defaults come from
+// who is actually reading rather than from a constant, because a creation-time
+// default nobody sees is exactly what put `genre: "family-adventure"` on an
+// adult space opera for three months.
+const AUDIENCE_SUGGESTIONS = ["child", "middle-grade", "teen", "adult"];
+
+const RECENT_GENRES_KEY = "storyforge_recent_genres";
+
+function recentGenres() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RECENT_GENRES_KEY) || "[]");
+    return Array.isArray(raw) ? raw.filter((g) => typeof g === "string" && g.trim()) : [];
+  } catch (_e) {
+    return [];
+  }
+}
+
+function rememberGenre(genre) {
+  const value = String(genre || "").trim();
+  if (!value) return;
+  try {
+    const next = [value, ...recentGenres().filter((g) => g !== value)].slice(0, 6);
+    localStorage.setItem(RECENT_GENRES_KEY, JSON.stringify(next));
+  } catch (_e) {
+    /* a full or blocked localStorage must not stop a story being created */
+  }
+}
+
+function suggestedAudienceForTier(tier) {
+  if (tier === 1) return "child";
+  if (tier === 2) return "middle-grade";
+  return "adult";
+}
+
+/** Free-text field with clickable suggestions. Never a <select>. */
+function SuggestField({ label, name, value, onChange, suggestions, placeholder, required }) {
+  const seen = new Set();
+  const chips = (suggestions || []).filter((chip) => {
+    const key = String(chip || "").trim().toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return (
+    <div className="suggest-field">
+      <label htmlFor={`field-${name}`}>{label}</label>
+      <input
+        id={`field-${name}`}
+        name={name}
+        value={value}
+        required={required}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <div className="suggest-chips">
+        {chips.map((chip) => (
+          <button
+            type="button"
+            key={chip}
+            className={value.trim().toLowerCase() === chip.toLowerCase() ? "active" : ""}
+            onClick={() => onChange(chip)}
+          >
+            {chip}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function tierForReaders(readers) {
   if ((readers || []).includes("talia")) return 1;
   if ((readers || []).includes("keen")) return 2;
@@ -339,6 +426,11 @@ function UniverseDetail() {
   const [data, setData] = useState(null);
   const [stories, setStories] = useState(null);
   const [menuStoryId, setMenuStoryId] = useState(null);
+  const [editMetaStory, setEditMetaStory] = useState(null);
+  const [editGenre, setEditGenre] = useState("");
+  const [editAudience, setEditAudience] = useState("");
+  const [savingMeta, setSavingMeta] = useState(false);
+  const [metaError, setMetaError] = useState("");
   const [confirmStory, setConfirmStory] = useState(null);
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -358,6 +450,51 @@ function UniverseDetail() {
   }, [id, setCurrentUniverse]);
   const universe = data?.universe || {};
   const loreLabel = tierForReaders(activeReaders) <= 2 ? "World Notes" : "Lore";
+
+  function openMetaEditor(story) {
+    setMenuStoryId(null);
+    setMetaError("");
+    setEditGenre(story.genre || "");
+    setEditAudience(story.audienceAge || "");
+    setEditMetaStory(story);
+  }
+
+  async function saveMeta() {
+    if (!editMetaStory?.storyId) return;
+    const genreValue = editGenre.trim();
+    const audienceValue = editAudience.trim();
+    // storyforge.story.metadata.update.v1 writes ONLY the keys supplied, so
+    // sending just these two cannot blank a tagline or a styleDial. It also
+    // refuses to clear genre or audienceAge, which is why both are required
+    // here rather than being sent empty.
+    if (!genreValue || !audienceValue) {
+      setMetaError("Genre and audience can be changed but not emptied.");
+      return;
+    }
+    setSavingMeta(true);
+    setMetaError("");
+    try {
+      await execute("storyforge.story.metadata.update.v1", {
+        tenantId: "core",
+        userId: "jonathan",
+        universeId: id,
+        storyId: editMetaStory.storyId,
+        genre: genreValue,
+        audienceAge: audienceValue,
+      });
+      rememberGenre(genreValue);
+      setStories((items) => (items || []).map((item) => (
+        item.storyId === editMetaStory.storyId
+          ? { ...item, genre: genreValue, audienceAge: audienceValue }
+          : item
+      )));
+      setEditMetaStory(null);
+    } catch (err) {
+      setMetaError(err.message || "Could not save.");
+    } finally {
+      setSavingMeta(false);
+    }
+  }
 
   async function deleteStory() {
     if (!confirmStory?.storyId) return;
@@ -487,13 +624,24 @@ function UniverseDetail() {
                         </div>
                         {menuStoryId === story.storyId && (
                           <div className="card-menu" onClick={(event) => event.stopPropagation()}>
+                            <button type="button" onClick={() => openMetaEditor(story)}>
+                              Edit Genre &amp; Audience
+                            </button>
                             <button type="button" className="danger-action" onClick={() => { setDeleteError(""); setConfirmStory(story); }}>
                               Delete Story
                             </button>
                           </div>
                         )}
                         <h2>{story.title}</h2>
-                        <p>{story.genre || "family adventure"}</p>
+                        {/* An absent genre says so. The old fallback rendered
+                            "family adventure" for a story that had no genre at
+                            all, which is precisely how a wrong default hides:
+                            the record said one thing and the screen said
+                            another, and the screen was the one anybody read. */}
+                        <p className={story.genre ? "" : "muted"}>
+                          {story.genre || "genre not set"}
+                          {story.audienceAge ? ` · ${story.audienceAge}` : ""}
+                        </p>
                         <div className="metadata">{story.totalChapters || 0} chapters · {pos.chapter ? `Chapter ${pos.chapter}` : "not started"}</div>
                         <Progress value={pos.chapter || 0} max={story.totalChapters || 1} />
                         {(exportState.message || exportState.error) && (
@@ -522,6 +670,45 @@ function UniverseDetail() {
         busy={deleting}
         error={deleteError}
       />
+      <AnimatePresence>
+        {editMetaStory && (
+          <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <button className="modal-shade" type="button" aria-label="Cancel" onClick={() => { if (!savingMeta) setEditMetaStory(null); }} />
+            <motion.section
+              className="confirm-modal meta-modal"
+              role="dialog"
+              aria-modal="true"
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 12 }}
+              transition={{ duration: 0.2 }}
+            >
+              <h2>{editMetaStory.title}</h2>
+              <SuggestField
+                label="Genre"
+                name="editGenre"
+                value={editGenre}
+                onChange={setEditGenre}
+                suggestions={[...recentGenres(), ...GENRE_SUGGESTIONS]}
+                placeholder="Anything — fuse them, invent one"
+              />
+              <SuggestField
+                label="Who is this for?"
+                name="editAudience"
+                value={editAudience}
+                onChange={setEditAudience}
+                suggestions={AUDIENCE_SUGGESTIONS}
+                placeholder="child, adult, anything"
+              />
+              {metaError && <div className="inline-error">{metaError}</div>}
+              <div className="modal-actions">
+                <button type="button" className="outline-button" disabled={savingMeta} onClick={() => setEditMetaStory(null)}>Cancel</button>
+                <button type="button" className="gold-button" disabled={savingMeta} onClick={saveMeta}>{savingMeta ? "Saving..." : "Save"}</button>
+              </div>
+            </motion.section>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </Page>
   );
 }
@@ -1485,6 +1672,9 @@ function NewUniverse() {
   const [style, setStyle] = useState("Golden age illustration");
   const [custom, setCustom] = useState("");
   const [busy, setBusy] = useState(false);
+  const [genre, setGenre] = useState("");
+  const [audience, setAudience] = useState(() => suggestedAudienceForTier(tierForReaders(activeReaders)));
+  const [error, setError] = useState("");
   const [explained, setExplained] = useState(() => localStorage.getItem(`storyforge_seen_universe_explainer_${primaryReader}`) === "1");
   const tier = tierForReaders(activeReaders);
   function acceptExplainer() {
@@ -1496,18 +1686,34 @@ function NewUniverse() {
     const form = new FormData(event.currentTarget);
     const title = String(form.get("title") || "").trim();
     if (!title) return;
+    const genreValue = genre.trim();
+    const audienceValue = audience.trim();
+    // The engine refuses creation without these (story_metadata_unspecified).
+    // Catch it here so the user sees which field, not a failed request.
+    if (!genreValue || !audienceValue) {
+      setError("Genre and audience are both required. Type anything you like.");
+      return;
+    }
     setBusy(true);
-    const res = await execute("storyforge.universe.create.v1", {
-      tenantId: "core",
-      userId: primaryReader,
-      title,
-      tagline: form.get("tagline"),
-      genre: "family-adventure",
-      coverColor: "#1a2744",
-      coverIcon: "✦",
-      worldSeed: form.get("worldSeed"),
-    });
-    nav(`/universes/${res.universeId}`);
+    setError("");
+    try {
+      const res = await execute("storyforge.universe.create.v1", {
+        tenantId: "core",
+        userId: primaryReader,
+        title,
+        tagline: form.get("tagline"),
+        genre: genreValue,
+        audienceAge: audienceValue,
+        coverColor: "#1a2744",
+        coverIcon: "✦",
+        worldSeed: form.get("worldSeed"),
+      });
+      rememberGenre(genreValue);
+      nav(`/universes/${res.universeId}`);
+    } catch (err) {
+      setBusy(false);
+      setError(err.message || "Could not create the universe.");
+    }
   }
   if (tier === 2 && activeReaders.length === 1 && !explained) {
     return (
@@ -1528,6 +1734,25 @@ function NewUniverse() {
         <input name="title" required placeholder="Universe name" />
         <input name="tagline" placeholder="One sentence that captures it" />
         <textarea name="worldSeed" placeholder="Describe the world in a sentence or two" />
+        <SuggestField
+          label="Genre"
+          name="genre"
+          value={genre}
+          onChange={setGenre}
+          suggestions={[...recentGenres(), ...GENRE_SUGGESTIONS]}
+          placeholder="Anything — fuse them, invent one"
+          required
+        />
+        <SuggestField
+          label="Who is this for?"
+          name="audienceAge"
+          value={audience}
+          onChange={setAudience}
+          suggestions={AUDIENCE_SUGGESTIONS}
+          placeholder="child, adult, anything"
+          required
+        />
+        {error && <div className="inline-error">{error}</div>}
         <div className="style-row">{["Watercolor storybook", "Ink and wash", "Golden age", "Cinematic", "Anime", "Pencil sketch", "Custom"].map((s) => <button type="button" className={style === s ? "active" : ""} key={s} onClick={() => setStyle(s)}>{s}</button>)}</div>
         {style === "Custom" && <input value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="Custom image style" />}
         <button className="gold-button" disabled={busy}>{busy ? "Creating..." : "Create Universe →"}</button>
@@ -1546,6 +1771,27 @@ function NewStory() {
   const [youngAnswers, setYoungAnswers] = useState(["", "", ""]);
   const [questions, setQuestions] = useState("");
   const [answers, setAnswers] = useState("");
+  // Inherited from the universe rather than hardcoded: a story usually shares
+  // its world's genre and audience, and inheriting shows the user what will be
+  // stored instead of silently substituting a literal.
+  const [genre, setGenre] = useState("");
+  const [audience, setAudience] = useState("");
+  const [metaError, setMetaError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    execute("storyforge.universe.get.v1", { tenantId: "core", userId: "jonathan", universeId: id })
+      .then((res) => {
+        if (cancelled) return;
+        const universe = res.universe || {};
+        setGenre((current) => current || universe.genre || "");
+        setAudience((current) => current || universe.audienceAge || suggestedAudienceForTier(tier));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAudience((current) => current || suggestedAudienceForTier(tier));
+      });
+    return () => { cancelled = true; };
+  }, [id, tier]);
   const flavors = ["Forging your story...", "Listening for the first sentence...", "Finding the true door..."];
   const [flavor, setFlavor] = useState(flavors[0]);
   useEffect(() => {
@@ -1566,21 +1812,35 @@ function NewStory() {
     setStep(2);
   }
   async function createStory() {
+    const genreValue = genre.trim();
+    const audienceValue = audience.trim();
+    if (!genreValue || !audienceValue) {
+      setMetaError("Genre and audience are both required. Type anything you like.");
+      return;
+    }
+    setMetaError("");
     setStep(3);
     const seed = `Description:\n${description}\n\nQuestions:\n${questions}\n\nAnswers:\n${answers}`;
-    const res = await execute("storyforge.story.create.v1", {
-      tenantId: "core",
-      userId: activeReaders[0] || "jonathan",
-      universeId: id,
-      title: inferTitle(description),
-      primaryReaders: activeReaders,
-      genre: "family-adventure",
-      isSpinoff: false,
-      storySeed: seed,
-      requestedBy: activeReaders[0] || "jonathan",
-      protagonistId: readingGroup,
-    });
-    nav(`/universes/${id}/stories/${res.storyId}`);
+    try {
+      const res = await execute("storyforge.story.create.v1", {
+        tenantId: "core",
+        userId: activeReaders[0] || "jonathan",
+        universeId: id,
+        title: inferTitle(description),
+        primaryReaders: activeReaders,
+        genre: genreValue,
+        audienceAge: audienceValue,
+        isSpinoff: false,
+        storySeed: seed,
+        requestedBy: activeReaders[0] || "jonathan",
+        protagonistId: readingGroup,
+      });
+      rememberGenre(genreValue);
+      nav(`/universes/${id}/stories/${res.storyId}`);
+    } catch (err) {
+      setStep(2);
+      setMetaError(err.message || "Could not create the story.");
+    }
   }
   if (tier === 2 && activeReaders.length === 1 && step < 3) {
     const prompts = [
@@ -1615,7 +1875,32 @@ function NewStory() {
     <Page>
       <AppHeader title="New Story" backTo={`/universes/${id}`} />
       {step === 1 && <section className="story-step"><textarea value={description} maxLength={500} onChange={(e) => setDescription(e.target.value)} placeholder="Describe the story you want..." /><div>{description.length}/500</div><button className="gold-button fixed-bottom" onClick={askQuestions} disabled={!description.trim()}>Continue →</button></section>}
-      {step === 2 && <section className="story-step"><div className="questions">{questions}</div><textarea value={answers} onChange={(e) => setAnswers(e.target.value)} placeholder="Answer anything useful. It can be rough." /><button className="gold-button fixed-bottom" onClick={createStory}>Create Story →</button></section>}
+      {step === 2 && (
+        <section className="story-step">
+          <div className="questions">{questions}</div>
+          <textarea value={answers} onChange={(e) => setAnswers(e.target.value)} placeholder="Answer anything useful. It can be rough." />
+          <SuggestField
+            label="Genre"
+            name="genre"
+            value={genre}
+            onChange={setGenre}
+            suggestions={[...recentGenres(), ...GENRE_SUGGESTIONS]}
+            placeholder="Anything — fuse them, invent one"
+            required
+          />
+          <SuggestField
+            label="Who is this for?"
+            name="audienceAge"
+            value={audience}
+            onChange={setAudience}
+            suggestions={AUDIENCE_SUGGESTIONS}
+            placeholder="child, adult, anything"
+            required
+          />
+          {metaError && <div className="inline-error">{metaError}</div>}
+          <button className="gold-button fixed-bottom" onClick={createStory}>Create Story →</button>
+        </section>
+      )}
       {step === 3 && <WaitingState text={flavor} />}
     </Page>
   );
