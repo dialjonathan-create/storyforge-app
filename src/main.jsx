@@ -1777,6 +1777,12 @@ function NewStory() {
   const [genre, setGenre] = useState("");
   const [audience, setAudience] = useState("");
   const [metaError, setMetaError] = useState("");
+  // `step` means two different things in this component: for the adult flow it
+  // is a screen (1 describe, 2 answer, 3 waiting), and for the young flow it is
+  // a question index. Those two meanings collided, which is what made the young
+  // path a dead end. `creating` separates "we are waiting on the backend" from
+  // any particular step number, so neither flow has to borrow the other's.
+  const [creating, setCreating] = useState(false);
   useEffect(() => {
     let cancelled = false;
     execute("storyforge.universe.get.v1", { tenantId: "core", userId: "jonathan", universeId: id })
@@ -1811,7 +1817,7 @@ function NewStory() {
     setQuestions(res.questions || "1. What feeling should this story leave behind?");
     setStep(2);
   }
-  async function createStory() {
+  async function createStory(overrides = {}) {
     const genreValue = genre.trim();
     const audienceValue = audience.trim();
     if (!genreValue || !audienceValue) {
@@ -1819,14 +1825,22 @@ function NewStory() {
       return;
     }
     setMetaError("");
+    setCreating(true);
     setStep(3);
-    const seed = `Description:\n${description}\n\nQuestions:\n${questions}\n\nAnswers:\n${answers}`;
+    // Taken from the caller rather than from state: the young path calls this
+    // in the same tick as the setState that would have populated them, and
+    // React has not re-rendered yet. Reading state here would have sent an
+    // empty seed.
+    const seedDescription = overrides.description !== undefined ? overrides.description : description;
+    const seedQuestions = overrides.questions !== undefined ? overrides.questions : questions;
+    const seedAnswers = overrides.answers !== undefined ? overrides.answers : answers;
+    const seed = `Description:\n${seedDescription}\n\nQuestions:\n${seedQuestions}\n\nAnswers:\n${seedAnswers}`;
     try {
       const res = await execute("storyforge.story.create.v1", {
         tenantId: "core",
         userId: activeReaders[0] || "jonathan",
         universeId: id,
-        title: inferTitle(description),
+        title: inferTitle(seedDescription),
         primaryReaders: activeReaders,
         genre: genreValue,
         audienceAge: audienceValue,
@@ -1838,11 +1852,34 @@ function NewStory() {
       rememberGenre(genreValue);
       nav(`/universes/${id}/stories/${res.storyId}`);
     } catch (err) {
+      setCreating(false);
       setStep(2);
       setMetaError(err.message || "Could not create the story.");
     }
   }
-  if (tier === 2 && activeReaders.length === 1 && step < 3) {
+
+  /** The young flow's last step. It has nothing further to ask -- the three
+   *  prompts ARE the description -- so it creates directly rather than routing
+   *  through the adult question screen, which is what sent `step` backwards and
+   *  turned the dead end into a loop. */
+  function beginYoungStory() {
+    const composed = `World: ${youngAnswers[0]}\nMain character: ${youngAnswers[1]}\nMost exciting thing: ${youngAnswers[2]}`;
+    setDescription(composed);
+    setQuestions("");
+    setAnswers("");
+    return createStory({ description: composed, questions: "", answers: "" });
+  }
+  // `step < 4`, not `step < 3`: at step 3 the guard used to fail, the branch
+  // stopped rendering, and the fallthrough showed the waiting state forever --
+  // the third prompt was never displayed and no story was ever created. A child
+  // answered two questions, tapped Next, and waited.
+  //
+  // `!creating` is the other half. Raising the bound alone is not enough: the
+  // final button used to call askQuestions(), whose tier-2 branch does
+  // setStep(2), which under a raised bound sends the child back to question two
+  // forever. Dead end becomes infinite loop. The button now creates directly
+  // and `creating` takes the branch down while the request is in flight.
+  if (tier === 2 && activeReaders.length === 1 && step < 4 && !creating) {
     const prompts = [
       "What kind of world should this story happen in?",
       "Who is the main character?",
@@ -1863,7 +1900,7 @@ function NewStory() {
           <button
             className="gold-button fixed-bottom"
             disabled={nextDisabled}
-            onClick={() => idx < 2 ? setStep(step + 1) : askQuestions()}
+            onClick={() => idx < 2 ? setStep(step + 1) : beginYoungStory()}
           >
             {idx < 2 ? "Next →" : "Begin the Story →"}
           </button>
@@ -1928,6 +1965,11 @@ function Root() {
     </BrowserRouter>
   );
 }
+
+// Exported for tests. The young-reader flow had no automated coverage at all,
+// which is how a dead end in the path a child uses survived unnoticed; a flow
+// that a seven-year-old walks should not be the least-tested screen in the app.
+export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier };
 
 createRoot(document.getElementById("root")).render(<Root />);
 
