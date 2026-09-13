@@ -1468,6 +1468,86 @@ h3 {
   opacity: 0.9;
 }
 
+/* --- Proposal card ------------------------------------------------------- */
+/* The editor used to print "approve it with storyforge.draft.approve.v1
+   (draftId …)". This is that, as something a thumb can do. */
+.proposal-card {
+  align-self: flex-start;
+  max-width: 92%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 2px 0 6px;
+  padding: 14px 16px;
+  border: 1px solid rgba(217, 142, 62, 0.45);
+  border-radius: 16px;
+  background: rgba(217, 142, 62, 0.08);
+}
+
+.proposal-kicker {
+  font-size: 0.78em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+
+.proposal-title {
+  margin: 0;
+  font-family: Cinzel, Georgia, serif;
+  font-size: 1.05em;
+  color: var(--gold-light);
+}
+
+.proposal-opening {
+  margin: 0;
+  opacity: 0.85;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.proposal-full { max-height: 40dvh; overflow-y: auto; }
+
+.proposal-expand {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--gold-light);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Wraps rather than scrolling: three actions must all be visible, and "Not
+   this" hiding off the edge of a row is how something gets saved by accident. */
+.proposal-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
+
+.proposal-actions button {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 999px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.proposal-approve {
+  border: 0;
+  background: linear-gradient(180deg, var(--gold-light), var(--gold));
+  color: #101827;
+  font-weight: 600;
+}
+
+.proposal-dismiss,
+.proposal-revise {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: inherit;
+}
+
+.proposal-actions button:disabled { opacity: 0.45; cursor: default; }
+
 /* --- Suggested replies --------------------------------------------------- */
 /* Aligned left, under the editor's turn, because they are answers TO it. Wrapped
    rather than scrolled: a horizontal scroller hides options, and the whole point
