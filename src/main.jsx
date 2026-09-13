@@ -182,7 +182,7 @@ function useApp() {
   return useContext(AppContext);
 }
 
-function Page({ children, className = "" }) {
+function Page({ children, className = "", style }) {
   const location = useLocation();
   return (
     <AnimatePresence mode="wait">
@@ -193,6 +193,7 @@ function Page({ children, className = "" }) {
         exit={{ opacity: 0, y: -8 }}
         transition={{ duration: 0.3, ease: "easeOut" }}
         className={`page ${className}`}
+        style={style}
       >
         {children}
       </motion.main>
@@ -794,6 +795,16 @@ function ChapterReader() {
   const [proseReady, setProseReady] = useState(true);
   const [reshapedPulse, setReshapedPulse] = useState(false);
   const [bookmarkFlash, setBookmarkFlash] = useState(false);
+  // Per reading group, so it follows whoever is reading rather than the device.
+  const [textScale, setTextScale] = useState(() => readTextScale(readingGroup));
+  useEffect(() => setTextScale(readTextScale(readingGroup)), [readingGroup]);
+  function changeTextScale(direction) {
+    setTextScale((current) => {
+      const next = stepTextScale(current, direction);
+      writeTextScale(readingGroup, next);
+      return next;
+    });
+  }
   const [defineWord, setDefineWord] = useState(null);
   const tier = tierForReaders(activeReaders);
 
@@ -1167,7 +1178,7 @@ function ChapterReader() {
   }
 
   return (
-    <Page className="reader-page">
+    <Page className="reader-page" style={{ "--prose-scale": textScale }}>
       <div className="scroll-progress" style={{ transform: `scaleX(${progress})` }} />
       <header className="reader-header">
         <button className="icon-button" onClick={() => nav(`/universes/${id}`)}>←</button>
@@ -1206,7 +1217,7 @@ function ChapterReader() {
         <ChoicePanel visible={choicesVisible} chapter={chapter} readers={activeReaders} onChoose={choose} showTooltip={showChoiceTooltip} onDismissTooltip={() => setShowChoiceTooltip(false)} />
         {tier !== 1 && <TalkBar value={talkText} setValue={setTalkText} onSend={sendChatMessage} busy={chatBusy} />}
       </motion.article>
-      <ChapterMenu open={menuOpen} onClose={() => setMenuOpen(false)} total={storyChapterLimit(story, chapter.chapterNumber)} current={chapterNumber} onJump={(n) => { setMenuOpen(false); setChapterNumber(n); window.scrollTo(0, 0); }} />
+      <ChapterMenu open={menuOpen} onClose={() => setMenuOpen(false)} total={storyChapterLimit(story, chapter.chapterNumber)} current={chapterNumber} onJump={(n) => { setMenuOpen(false); setChapterNumber(n); window.scrollTo(0, 0); }} textScale={textScale} onTextScale={changeTextScale} />
       <ReshapeConfirm point={reshapePromptPoint} onCancel={() => setReshapePromptPoint(null)} onConfirm={() => { setReshapePoint(reshapePromptPoint); setReshapePromptPoint(null); }} />
       <ReshapeSheet point={reshapePoint} tier={tier} onCancel={() => setReshapePoint(null)} onSubmit={submitReshape} />
       <StoryChatSheet thread={chatThread} busy={chatBusy} onSend={sendChatMessage} onClose={closeChat} onApprove={approveDraft} onDismiss={dismissDraft} />
@@ -2073,13 +2084,46 @@ function WordDefinition({ word, onClose }) {
   );
 }
 
-function ChapterMenu({ open, onClose, total, current, onJump }) {
+export function TextSizeControl({ scale, onChange }) {
+  const index = textScaleIndex(scale);
+  return (
+    <div className="text-size" role="group" aria-label="Text size">
+      <button
+        className="text-size-step"
+        onClick={() => onChange(-1)}
+        disabled={index === 0}
+        aria-label="Smaller text"
+      >
+        A<span aria-hidden="true">−</span>
+      </button>
+      {/* The readout names the step. "Larger" is something you can ask for out
+          loud; a percentage is not, and neither is a slider position. */}
+      <span className="text-size-label" aria-live="polite">{TEXT_SCALE_LABELS[index]}</span>
+      <button
+        className="text-size-step"
+        onClick={() => onChange(1)}
+        disabled={index === TEXT_SCALES.length - 1}
+        aria-label="Bigger text"
+      >
+        A<span aria-hidden="true">+</span>
+      </button>
+    </div>
+  );
+}
+
+function ChapterMenu({ open, onClose, total, current, onJump, textScale = 1, onTextScale }) {
   return (
     <AnimatePresence>
       {open && (
         <motion.div className="drawer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
           <button className="drawer-shade" onClick={onClose} />
           <motion.aside initial={{ x: "100%" }} animate={{ x: 0 }} exit={{ x: "100%" }} transition={{ duration: 0.25 }} className="drawer-panel">
+            {onTextScale && (
+              <>
+                <h2>Text size</h2>
+                <TextSizeControl scale={textScale} onChange={onTextScale} />
+              </>
+            )}
             <h2>Chapters</h2>
             {Array.from({ length: total }, (_, i) => i + 1).map((n) => <button className={n === current ? "current" : ""} key={n} onClick={() => onJump(n)}>Chapter {n}</button>)}
           </motion.aside>
@@ -2109,6 +2153,59 @@ function useSwipe(onSwipe) {
       window.removeEventListener("touchend", end);
     };
   }, [onSwipe]);
+}
+
+/* --- Text size ---------------------------------------------------------
+ *
+ * A seven-year-old and a three-year-old read this, sometimes on a phone and
+ * sometimes on an iPad held at arm's length, and 20px is one guess at all of
+ * that. The scale is per reading group rather than per device: it belongs to
+ * whoever is reading, and it follows them.
+ *
+ * Five steps, not a slider. A slider on a phone is a drag to land on a value
+ * you cannot name, and a child changing text size by accident mid-chapter is a
+ * worse outcome than a coarse control.
+ */
+export const TEXT_SCALES = [0.85, 1, 1.15, 1.3, 1.5];
+export const TEXT_SCALE_LABELS = ["Smaller", "Normal", "Larger", "Much larger", "Biggest"];
+
+export function textScaleIndex(scale) {
+  const found = TEXT_SCALES.indexOf(scale);
+  if (found !== -1) return found;
+  // An unknown value (an older build, a hand-edited key) resolves to the
+  // nearest step rather than throwing the reader back to Normal.
+  let best = TEXT_SCALES.indexOf(1);
+  let distance = Infinity;
+  TEXT_SCALES.forEach((candidate, index) => {
+    const d = Math.abs(candidate - (Number(scale) || 1));
+    if (d < distance) {
+      distance = d;
+      best = index;
+    }
+  });
+  return best;
+}
+
+export function stepTextScale(scale, direction) {
+  const index = textScaleIndex(scale) + direction;
+  return TEXT_SCALES[Math.max(0, Math.min(TEXT_SCALES.length - 1, index))];
+}
+
+export function readTextScale(group) {
+  try {
+    const raw = Number(localStorage.getItem(`sf_text_${group}`));
+    return raw > 0 ? TEXT_SCALES[textScaleIndex(raw)] : 1;
+  } catch {
+    return 1;
+  }
+}
+
+export function writeTextScale(group, scale) {
+  try {
+    localStorage.setItem(`sf_text_${group}`, String(scale));
+  } catch {
+    /* a reader with storage blocked still gets the size for this sitting */
+  }
 }
 
 /**
