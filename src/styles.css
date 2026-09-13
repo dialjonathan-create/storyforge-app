@@ -269,9 +269,30 @@ h3 {
   opacity: 1;
 }
 
-.menu-save-spot {
+.menu-save-spot,
+.menu-switch-reader {
   width: 100%;
   margin-bottom: 18px;
+}
+
+/* The voice list. Buttons rather than a <select>: a native select on iOS opens
+   a full-screen wheel over the chapter, which is the thing keeping narration
+   controls out of the reading page in the first place. */
+.voice-choice {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+.drawer-panel .voice-option {
+  /* The drawer's buttons are laid out for one short word each; a voice label is
+     a name and an accent, so it needs room to be two lines without clipping. */
+  min-height: 44px;
+  height: auto;
+  padding: 10px 14px;
+  line-height: 1.3;
+  white-space: normal;
+  margin-bottom: 0;
 }
 
 .reader-header-actions {
@@ -933,9 +954,15 @@ h3 {
   right: 0;
   bottom: 0;
   width: min(80vw, 380px);
-  padding: calc(env(safe-area-inset-top) + 28px) 18px 28px;
+  padding: calc(env(safe-area-inset-top) + 28px) 18px calc(env(safe-area-inset-bottom) + 28px);
   background: var(--bg-elevated);
   box-shadow: var(--shadow);
+  /* The drawer holds settings now as well as every chapter in the story. A
+     twenty-chapter book ran off the bottom of the panel with nothing to
+     scroll, which is how the jump list stopped working past chapter 9. */
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 .drawer-panel h2 {
