@@ -1,0 +1,47 @@
+name: CI
+
+# storyforge-app had no CI of any kind until 2026-09-13: zero workflow runs in the
+# repo's history. A Cloud Build trigger deploys main to Cloud Run automatically, so
+# merging IS shipping, with nothing between a pull request and the browser of a
+# seven-year-old. The young-reader story flow shipped broken and stayed broken
+# because nothing ran the tests that already existed in tests/.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs on a branch; never cancel main's.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    # ubuntu-latest deliberately, not the self-hosted ability-core-storyforge
+    # runner. That runner is registered and idle but has never taken a job in its
+    # life, so its ability to run one is unproven. This repo deploys straight to
+    # production on merge; the first CI it has ever had should not also be the
+    # first test of an untried runner. Swap to [self-hosted] once that runner has
+    # demonstrably completed a job, and hosted minutes drop to zero.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # The tests exist and are the point. vitest.config.js and tests/ were both
+      # already in the repo; nothing had ever executed them.
+      - name: Unit tests
+        run: npm test
+
+      # The build is what Cloud Build runs on merge. A green test suite over a
+      # bundle that does not compile would still break production.
+      - name: Build
+        run: npm run build
