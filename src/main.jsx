@@ -868,7 +868,9 @@ function Progress({ value, max }) {
  */
 export function loreParagraphs(value) {
   if (typeof value !== "string") return [];
-  const trimmed = value.trim();
+  // Bible prose is written by the same generator as the chapters, so it can
+  // carry the same cues.
+  const trimmed = stripProseDirectives(value).trim();
   if (!trimmed) return [];
   const byBlankLine = trimmed.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
   if (byBlankLine.length > 1) return byBlankLine;
@@ -911,8 +913,10 @@ export function LoreField({ title, value, render, className = "lore-card" }) {
 
 /** A value a person can read. Never "[object Object]". */
 export function loreText(item) {
-  if (typeof item === "string") return item;
-  if (item && typeof item === "object") return item.text || item.description || item.name || item.event || "";
+  if (typeof item === "string") return stripProseDirectives(item);
+  if (item && typeof item === "object") {
+    return stripProseDirectives(item.text || item.description || item.name || item.event || "");
+  }
   return item == null ? "" : String(item);
 }
 
@@ -1515,19 +1519,97 @@ function ChapterImages({ chapter, tier, onHeroLoad }) {
   return <motion.img initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5 }} className="chapter-image hero-image" src={images[0].url} alt={images[0].sceneDescription || "Chapter illustration"} onLoad={onHeroLoad} />;
 }
 
+/* --- What a reader is allowed to see ------------------------------------
+ *
+ * Read on the device, 2026-09-13, chapter 2 of `the-embodied-age/threshold`:
+ *
+ *     record; it was an architecture. <!-- pause --> Maren Voss sat at the
+ *     Before her lay the *Codex of Internal Rhythms*, a book
+ *
+ * Two different failures in one paragraph, and neither is a generator bug.
+ *
+ * The `<!-- ... -->` markers are TTS direction — the live chapter carries
+ * `pause`, `character: maren` and `dramatic`. They are **data for the audio
+ * renderer** and must stay in Firestore and in Drive exactly as written. They
+ * simply have no business on a page.
+ *
+ * The `*italics*` are markdown. #12 taught the chat sheet to render it and
+ * stopped there, so the chapter reader — the screen this app is actually for —
+ * has been printing the asterisks since the day the model started emitting
+ * them.
+ *
+ * So: one seam. `chapter.prose` stays untouched and is what the audio path
+ * reads; everything that shows text to a person goes through here.
+ */
+
+// Every TTS directive the generator emits, and anything shaped like one it
+// starts emitting tomorrow. Deliberately broad: an unknown directive is still
+// not something a reader should see.
+const PROSE_DIRECTIVE = /<!--[\s\S]*?-->/g;
+
+/** A scene break, in either of the two spellings the prose uses. */
+const SCENE_BREAK = /^\s*(?:\*\*\*|---|—\s*◈\s*—|◈)\s*$/;
+
+/**
+ * The stored text with the audio cues taken out. Everything a person reads
+ * passes through this; nothing that writes or narrates does.
+ */
+export function stripProseDirectives(text) {
+  return String(text ?? "").replace(PROSE_DIRECTIVE, "");
+}
+
+/**
+ * What the audio renderer wants back: the cues, in order, with what they said.
+ * Exported so a test can prove the reader and the narrator are looking at the
+ * same source and disagreeing only about the cues.
+ */
+export function proseDirectives(text) {
+  return [...String(text ?? "").matchAll(PROSE_DIRECTIVE)].map((match) => {
+    const body = match[0].slice(4, -3).trim();
+    const [name, ...rest] = body.split(":");
+    return { directive: name.trim().toLowerCase(), value: rest.join(":").trim() || null, raw: match[0] };
+  });
+}
+
+/**
+ * Blocks, in reading order. A paragraph or a scene break — never a paragraph
+ * whose entire content is three asterisks, which is what the reader showed.
+ *
+ * Stripping happens first so that a directive sitting alone on its own line
+ * does not leave an empty paragraph behind it.
+ */
+export function proseBlocks(text) {
+  return stripProseDirectives(text)
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => (SCENE_BREAK.test(line) ? { type: "break" } : { type: "paragraph", text: line }));
+}
+
 function Prose({ chapter, tier, entities, onLongPress, onEntityTap, onWordTap, pulseFrom }) {
-  const paragraphs = String(chapter.prose || "").split(/\n+/).filter(Boolean);
+  const blocks = proseBlocks(chapter.prose);
   const images = (chapter.images || []).filter((img) => img.url);
+  // Paragraphs keep their own numbering across scene breaks, because the
+  // bookmark and the reshape anchor both address a paragraph index and a rule
+  // is not a paragraph.
+  let paragraphIndex = -1;
   return (
     <div className={`prose ${pulseFrom != null ? "reshaped-pulse" : ""}`}>
-      {paragraphs.map((p, i) => (
-        <React.Fragment key={i}>
-          <InteractiveParagraph text={p} index={i} entities={entities} onLongPress={onLongPress} onEntityTap={onEntityTap} onWordTap={onWordTap} pulsing={pulseFrom != null && i >= pulseFrom} />
-          {tier === 1 && images[i % Math.max(1, images.length)] && i > 0 && i % 2 === 1 && (
-            <motion.img initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5 }} className="chapter-image" src={images[i % images.length].url} alt={images[i % images.length].sceneDescription || "Chapter illustration"} />
-          )}
-        </React.Fragment>
-      ))}
+      {blocks.map((block, blockIndex) => {
+        if (block.type === "break") {
+          return <hr className="scene-break" key={`b${blockIndex}`} aria-hidden="true" />;
+        }
+        paragraphIndex += 1;
+        const i = paragraphIndex;
+        return (
+          <React.Fragment key={`p${blockIndex}`}>
+            <InteractiveParagraph text={block.text} index={i} entities={entities} onLongPress={onLongPress} onEntityTap={onEntityTap} onWordTap={onWordTap} pulsing={pulseFrom != null && i >= pulseFrom} />
+            {tier === 1 && images[i % Math.max(1, images.length)] && i > 0 && i % 2 === 1 && (
+              <motion.img initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5 }} className="chapter-image" src={images[i % images.length].url} alt={images[i % images.length].sceneDescription || "Chapter illustration"} />
+            )}
+          </React.Fragment>
+        );
+      })}
     </div>
   );
 }
@@ -1565,7 +1647,7 @@ function InteractiveParagraph({ text, index, entities, onLongPress, onEntityTap,
       onPointerCancel={endPress}
       onPointerLeave={endPress}
     >
-      {renderInteractiveText(text, entities, onEntityTap, onWordTap ? handleWordTap : null)}
+      {renderProseText(text, entities, onEntityTap, onWordTap ? handleWordTap : null)}
     </p>
   );
 }
@@ -1577,6 +1659,34 @@ function InteractiveParagraph({ text, index, entities, onLongPress, onEntityTap,
 // 3 letters are left alone (tapping "a" or "is" for a definition is just
 // noise), and onWordTap being falsy (tier 1 / Talia) makes this a no-op that
 // falls straight back to the original entity-only rendering.
+/**
+ * A paragraph of chapter prose: markdown emphasis, entity links and tappable
+ * words, all at once.
+ *
+ * Layered rather than merged, and the order matters. `renderEntityText` works
+ * by string indices, so markdown has to be resolved into segments FIRST —
+ * otherwise the asterisks shift every offset and "Maren" inside an italic
+ * phrase stops linking. Each plain segment then goes through the existing
+ * entity + word pipeline untouched, which is why tap-to-define and
+ * tap-a-character still work inside an italicised line.
+ */
+function renderProseText(text, entities, onEntityTap, onWordTap) {
+  const parts = String(text ?? "").split(MD_INLINE).filter((part) => part !== "");
+  return parts.flatMap((part, index) => {
+    const inner = (body) => renderInteractiveText(body, entities, onEntityTap, onWordTap);
+    if (/^\*\*[^*]+\*\*$/.test(part) || /^__[^_]+__$/.test(part)) {
+      return [<strong key={`s${index}`}>{inner(part.slice(2, -2))}</strong>];
+    }
+    if (/^\*[^*\n]+\*$/.test(part) || /^_[^_\n]+_$/.test(part)) {
+      return [<em key={`e${index}`}>{inner(part.slice(1, -1))}</em>];
+    }
+    if (/^`[^`\n]+`$/.test(part)) {
+      return [<code key={`c${index}`}>{part.slice(1, -1)}</code>];
+    }
+    return inner(part);
+  });
+}
+
 function renderInteractiveText(text, entities, onEntityTap, onWordTap) {
   const base = renderEntityText(text, entities, onEntityTap);
   if (!onWordTap) return base;
@@ -1777,7 +1887,9 @@ function ProposalCard({ proposal, busy, onApprove, onDismiss, onRevise }) {
   if (!proposal?.draftId) return null;
 
   const title = proposal.chapterTitle || (proposal.chapterNumber ? `Chapter ${proposal.chapterNumber}` : "A draft");
-  const opening = String(proposal.preview || proposal.opening || "").trim();
+  // Generated prose carries the same TTS cues the chapter reader strips. A
+  // proposal card showing "<!-- pause -->" is the same bug on a smaller screen.
+  const opening = stripProseDirectives(proposal.preview || proposal.opening || "").trim();
   const disabled = busy || Boolean(pending);
 
   async function run(kind, fn) {
@@ -1801,7 +1913,7 @@ function ProposalCard({ proposal, busy, onApprove, onDismiss, onRevise }) {
       {opening && !expanded && <p className="proposal-opening">{opening}</p>}
       {expanded && (
         <div className="proposal-full">
-          {renderMarkdown(proposal.prose || proposal.text || opening || "The full text was not sent with this proposal.")}
+          {renderMarkdown(stripProseDirectives(proposal.prose || proposal.text || "") || opening || "The full text was not sent with this proposal.")}
         </div>
       )}
       {(proposal.prose || proposal.text) && (
@@ -3373,7 +3485,7 @@ function RoutedBoundary({ children }) {
 // Exported for tests. The young-reader flow had no automated coverage at all,
 // which is how a dead end in the path a child uses survived unnoticed; a flow
 // that a seven-year-old walks should not be the least-tested screen in the app.
-export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard, ErrorBoundary, Lore, UniverseEditor };
+export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard, ErrorBoundary, Lore, UniverseEditor, Prose };
 
 createRoot(document.getElementById("root")).render(<Root />);
 
