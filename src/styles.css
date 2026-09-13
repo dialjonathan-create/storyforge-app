@@ -1468,6 +1468,36 @@ h3 {
   opacity: 0.9;
 }
 
+/* --- Suggested replies --------------------------------------------------- */
+/* Aligned left, under the editor's turn, because they are answers TO it. Wrapped
+   rather than scrolled: a horizontal scroller hides options, and the whole point
+   is that every option is visible without work. */
+.suggested-replies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-self: flex-start;
+  max-width: 88%;
+  margin: -2px 0 4px;
+}
+
+.suggested-reply {
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 1px solid rgba(217, 142, 62, 0.55);
+  border-radius: 999px;
+  background: rgba(217, 142, 62, 0.1);
+  color: inherit;
+  font: inherit;
+  font-size: 0.95em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.suggested-reply:active { transform: scale(0.97); }
+
+.suggested-reply:disabled { opacity: 0.45; cursor: default; }
+
 .chat-markdown code {
   padding: 1px 5px;
   border-radius: 6px;
