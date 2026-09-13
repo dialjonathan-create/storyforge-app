@@ -244,10 +244,34 @@ h3 {
   left: 24px;
   right: 24px;
   width: auto;
-  /* Back, title, then one group for everything on the right. The trailing
-     controls are no longer a fixed count — 💬 is hidden for the youngest tier —
-     and a fixed template left a hole where it would have been. */
-  grid-template-columns: 48px 1fr auto;
+  /* Back on one side, the actions on the other. The title used to sit between
+     them and truncate on every real story name. */
+  justify-content: space-between;
+  transition: opacity 0.25s ease;
+  /* Two children: back, and the actions group pushed to the end. The title
+     used to sit between them; it is gone. The trailing controls are not a fixed
+     count -- 💬 is hidden for the youngest tier -- which is why they are one
+     group rather than their own columns. */
+  grid-template-columns: 48px 1fr;
+}
+
+.reader-header .reader-header-actions {
+  justify-self: end;
+}
+
+/* Out of the way while reading, not gone. A control a reader cannot find is
+   worse than one they can see through, so this is opacity and not display. */
+.reader-header-dim {
+  opacity: 0.28;
+}
+
+.reader-header-dim:focus-within {
+  opacity: 1;
+}
+
+.menu-save-spot {
+  width: 100%;
+  margin-bottom: 18px;
 }
 
 .reader-header-actions {

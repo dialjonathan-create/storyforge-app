@@ -1010,6 +1010,7 @@ function ChapterReader() {
   const [proseReady, setProseReady] = useState(true);
   const [reshapedPulse, setReshapedPulse] = useState(false);
   const [bookmarkFlash, setBookmarkFlash] = useState(false);
+  const [barDim, setBarDim] = useState(false);
   // Per reading group, so it follows whoever is reading rather than the device.
   const [textScale, setTextScale] = useState(() => readTextScale(readingGroup));
   useEffect(() => setTextScale(readTextScale(readingGroup)), [readingGroup]);
@@ -1106,11 +1107,20 @@ function ChapterReader() {
 
   useEffect(() => {
     if (!chapterNumber) return undefined;
+    // The bar gets out of the way while you read and comes back when you look
+    // up. Dim on the way down, full on the way up -- deliberately *dim* and not
+    // hidden, because a control a reader cannot find is worse than one they can
+    // see through.
+    let lastY = window.scrollY;
     const handler = () => {
       const scrollable = document.documentElement.scrollHeight - window.innerHeight;
       const pct = scrollable > 0 ? window.scrollY / scrollable : 0;
       setProgress(Math.max(0, Math.min(1, pct)));
       writePosition(readingGroup, storyId, chapterNumber, pct);
+      const y = window.scrollY;
+      if (y > lastY + 4 && y > 80) setBarDim(true);
+      else if (y < lastY - 4 || y <= 80) setBarDim(false);
+      lastY = y;
       if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 150) queueChoiceReveal();
     };
     window.addEventListener("scroll", handler, { passive: true });
@@ -1395,17 +1405,19 @@ function ChapterReader() {
   return (
     <Page className="reader-page" style={{ "--prose-scale": textScale }}>
       <div className="scroll-progress" style={{ transform: `scaleX(${progress})` }} />
-      <header className="reader-header">
-        <button className="icon-button" onClick={() => nav(`/universes/${id}`)}>←</button>
-        <div className="reader-title">{story?.title || "Story"}</div>
-        {/* Grouped rather than four more grid columns: the 💬 is conditional,
-            and a fixed template leaves a hole in the header for tier 1. */}
+      {/* 2026-09-13: the title came out. It truncated to "THE FAMILY FOL…" on
+          every story with a real name, and the chapter heading sits directly
+          underneath it saying the same thing properly. An element that is
+          cut off on every screen is not carrying information.
+
+          The bookmark moved into the chapter menu. It was the icon that read
+          as an anchor, and it is a once-in-a-while action sitting in the four
+          places a thumb reaches most. */}
+      <header className={`reader-header${barDim ? " reader-header-dim" : ""}`} onPointerDown={() => setBarDim(false)}>
+        <button className="icon-button" onClick={() => nav(`/universes/${id}`)} aria-label="Back to the story list">←</button>
         <div className="reader-header-actions">
-          <button className="icon-button" onClick={saveBookmarkHere} aria-label="Save your spot here">🔖</button>
-          {/* The only way into the sheet used to be typing into the talk bar,
-              which made the conversation invisible until you started a new one. */}
-          {tier !== 1 && <button className="icon-button" onClick={openChat} aria-label="Open the conversation">💬</button>}
-          <button className="icon-button" onClick={() => setMenuOpen(true)}>≡</button>
+          {tier !== 1 && <button className="icon-button" onClick={openChat} aria-label="Talk to the story">💬</button>}
+          <button className="icon-button" onClick={() => setMenuOpen(true)} aria-label="Chapters and settings">≡</button>
           <Avatars ids={activeReaders} />
         </div>
       </header>
@@ -1441,7 +1453,7 @@ function ChapterReader() {
             the 💬 in the header opens, and it sat there permanently taking a
             third of the reading view to do it. The reading view is prose. */}
       </motion.article>
-      <ChapterMenu open={menuOpen} onClose={() => setMenuOpen(false)} total={storyChapterLimit(story, chapter.chapterNumber)} current={chapterNumber} onJump={(n) => { setMenuOpen(false); setChapterNumber(n); window.scrollTo(0, 0); }} textScale={textScale} onTextScale={changeTextScale} />
+      <ChapterMenu open={menuOpen} onClose={() => setMenuOpen(false)} total={storyChapterLimit(story, chapter.chapterNumber)} current={chapterNumber} onJump={(n) => { setMenuOpen(false); setChapterNumber(n); window.scrollTo(0, 0); }} textScale={textScale} onTextScale={changeTextScale} onSaveSpot={() => { setMenuOpen(false); saveBookmarkHere(); }} />
       <ReshapeConfirm point={reshapePromptPoint} onCancel={() => setReshapePromptPoint(null)} onConfirm={() => { setReshapePoint(reshapePromptPoint); setReshapePromptPoint(null); }} />
       <ReshapeSheet point={reshapePoint} tier={tier} onCancel={() => setReshapePoint(null)} onSubmit={submitReshape} />
       <ErrorBoundary
@@ -2446,13 +2458,21 @@ export function TextSizeControl({ scale, onChange }) {
   );
 }
 
-function ChapterMenu({ open, onClose, total, current, onJump, textScale = 1, onTextScale }) {
+function ChapterMenu({ open, onClose, total, current, onJump, textScale = 1, onTextScale, onSaveSpot }) {
   return (
     <AnimatePresence>
       {open && (
         <motion.div className="drawer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
           <button className="drawer-shade" onClick={onClose} />
           <motion.aside initial={{ x: "100%" }} animate={{ x: 0 }} exit={{ x: "100%" }} transition={{ duration: 0.25 }} className="drawer-panel">
+            {onSaveSpot && (
+              <>
+                <h2>This spot</h2>
+                <button className="outline-button menu-save-spot" type="button" onClick={onSaveSpot}>
+                  Save my spot here
+                </button>
+              </>
+            )}
             {onTextScale && (
               <>
                 <h2>Text size</h2>
