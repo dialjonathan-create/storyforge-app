@@ -137,11 +137,51 @@ function tierForReaders(readers) {
   return 3;
 }
 
+/**
+ * Who is holding the phone, for the server's permission checks.
+ *
+ * 2026-09-13: thirteen Storyforge read capabilities had no permission check at
+ * all, and the five that did were being asked the wrong question — this client
+ * put `userId: "jonathan"` in the envelope from every device in the house, so
+ * `_can_read_universe` evaluated as Jonathan on Adele's phone and let
+ * everything through. The server reads `requestedBy`; only one call site in
+ * twenty-four was sending it.
+ *
+ * So `execute` stamps it, rather than twenty-four call sites remembering to.
+ * The initial value is read from storage at module load, so a call that beats
+ * the first render is still asking as the right person.
+ *
+ * `userId` is deliberately left alone: it decides ownership on the write paths,
+ * and changing who owns a created universe is not a thing a security fix should
+ * do quietly.
+ */
+export function readStoredReaders() {
+  try {
+    const defaultReader = localStorage.getItem("storyforge_default_reader");
+    if (defaultReader) return [defaultReader];
+    const saved = JSON.parse(localStorage.getItem("storyforge_reading_group") || "[]");
+    return Array.isArray(saved) ? saved : [];
+  } catch {
+    return [];
+  }
+}
+
+let currentReaderId = readStoredReaders()[0] || "jonathan";
+
+export function setCurrentReaderId(id) {
+  currentReaderId = String(id || "").trim().toLowerCase() || "jonathan";
+}
+
+export function getCurrentReaderId() {
+  return currentReaderId;
+}
+
 async function execute(command, args = {}) {
   const response = await fetch(`${ABILITY_URL}/v1/execute`, {
     method: "POST",
     headers: abilityHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ command, args }),
+    // requestedBy first so an explicit one from the caller overrides it.
+    body: JSON.stringify({ command, args: { requestedBy: currentReaderId, ...args } }),
   });
   const data = await response.json().catch(() => ({}));
   if (response.status === 401) throw new Error("Storyforge is not signed in on this device (no token). Ask Jonathan.");
@@ -151,16 +191,10 @@ async function execute(command, args = {}) {
 
 function AppProvider({ children }) {
   const [users, setUsers] = useState(FAMILY);
-  const [activeReaders, setActiveReaders] = useState(() => {
-    try {
-      const defaultReader = localStorage.getItem("storyforge_default_reader");
-      if (defaultReader) return [defaultReader];
-      const saved = JSON.parse(localStorage.getItem("storyforge_reading_group") || "[]");
-      return Array.isArray(saved) ? saved : [];
-    } catch {
-      return [];
-    }
-  });
+  const [activeReaders, setActiveReaders] = useState(readStoredReaders);
+  // Switching readers switches identity. Without this the picker changes the
+  // avatars and nothing else.
+  useEffect(() => setCurrentReaderId(activeReaders[0]), [activeReaders]);
   const [currentUniverse, setCurrentUniverse] = useState(null);
   const [currentStory, setCurrentStory] = useState(null);
   const value = useMemo(() => ({
