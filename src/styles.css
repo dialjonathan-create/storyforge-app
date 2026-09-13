@@ -244,7 +244,17 @@ h3 {
   left: 24px;
   right: 24px;
   width: auto;
-  grid-template-columns: 48px 1fr 48px 48px auto;
+  /* Back, title, then one group for everything on the right. The trailing
+     controls are no longer a fixed count — 💬 is hidden for the youngest tier —
+     and a fixed template left a hole where it would have been. */
+  grid-template-columns: 48px 1fr auto;
+}
+
+.reader-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .header-title,
@@ -1433,6 +1443,41 @@ h3 {
 }
 
 .sheet-panel.chat-sheet .composer { flex: 0 0 auto; }
+
+/* The line between the conversation being re-read and the one being had. The
+   thread is restored from the server on open, so without a break an hour-old
+   exchange and the thing just typed read as one continuous conversation. */
+.chat-divider {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0;
+  opacity: 0.55;
+}
+.chat-divider::before,
+.chat-divider::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: currentColor;
+  opacity: 0.35;
+}
+.chat-divider span {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.chat-empty {
+  align-self: center;
+  margin: auto 0;
+  padding: 24px 8px;
+  text-align: center;
+  opacity: 0.6;
+  font-style: italic;
+}
 
 /* --- Markdown inside an assistant turn ---------------------------------- */
 /* `.chat-line` is `white-space: pre-wrap`, which is right for the person's own
