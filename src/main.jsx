@@ -969,7 +969,6 @@ function ChapterReader() {
   const [chatThread, setChatThread] = useState(null);
   const [chatBusy, setChatBusy] = useState(false);
   const [chatSavedChapter, setChatSavedChapter] = useState(false);
-  const [talkText, setTalkText] = useState("");
   const [proseReady, setProseReady] = useState(true);
   const [reshapedPulse, setReshapedPulse] = useState(false);
   const [bookmarkFlash, setBookmarkFlash] = useState(false);
@@ -1400,7 +1399,9 @@ function ChapterReader() {
         )}
         {choiceRevealPending && <div className="choice-sweep" />}
         <ChoicePanel visible={choicesVisible} chapter={chapter} readers={activeReaders} onChoose={choose} showTooltip={showChoiceTooltip} onDismissTooltip={() => setShowChoiceTooltip(false)} />
-        {tier !== 1 && <TalkBar value={talkText} setValue={setTalkText} onSend={sendChatMessage} busy={chatBusy} />}
+        {/* 2026-09-13: the talk bar is gone. It opened the same StoryChatSheet
+            the 💬 in the header opens, and it sat there permanently taking a
+            third of the reading view to do it. The reading view is prose. */}
       </motion.article>
       <ChapterMenu open={menuOpen} onClose={() => setMenuOpen(false)} total={storyChapterLimit(story, chapter.chapterNumber)} current={chapterNumber} onJump={(n) => { setMenuOpen(false); setChapterNumber(n); window.scrollTo(0, 0); }} textScale={textScale} onTextScale={changeTextScale} />
       <ReshapeConfirm point={reshapePromptPoint} onCancel={() => setReshapePromptPoint(null)} onConfirm={() => { setReshapePoint(reshapePromptPoint); setReshapePromptPoint(null); }} />
@@ -1900,14 +1901,17 @@ function composerRows(value, max = COMPOSER_MAX_ROWS) {
   return Math.max(1, Math.min(lines, max));
 }
 
-/** The one compose row, used by the chat sheet and by the reader's talk bar.
+/** The one compose row. Lives in the chat sheet, which is now the only place
+ * anyone types to the story.
  *
- * WHAT IT REPLACES. Both call sites were a single-line `<input>` beside a
- * `gold-button`. `.gold-button` is `width: 100%`, and `.story-talk` declared
+ * WHAT IT REPLACED. Both original call sites were a single-line `<input>` beside
+ * a `gold-button`. `.gold-button` is `width: 100%`, and `.story-talk` declared
  * three grid columns (`auto 1fr auto`) for two children — so the field landed in
  * the `auto` column and sized to its content while the button took the `1fr`.
- * That is the small square and the full-width Send: not a styling opinion, a
- * template with one column too many.
+ * That was the small square and the full-width Send: not a styling opinion, a
+ * template with one column too many. The second call site, the reader's talk
+ * bar, was removed on 2026-09-13 — it opened the same sheet as the 💬 in the
+ * header while occupying a third of the reading view.
  */
 function Composer({
   value,
@@ -1979,23 +1983,6 @@ function Composer({
         </button>
       ) : null}
     </form>
-  );
-}
-
-function TalkBar({ value, setValue, onSend, busy = false }) {
-  return (
-    <Composer
-      className="story-talk"
-      value={value}
-      onChange={setValue}
-      onSubmit={(text) => {
-        setValue("");
-        onSend(text);
-      }}
-      busy={busy}
-      placeholder="Talk to the story..."
-      label="Talk to the story"
-    />
   );
 }
 
