@@ -5,6 +5,8 @@ import { AnimatePresence, motion } from "framer-motion";
 import "./styles.css";
 import NarrationPanel from "./NarrationPanel";
 
+const AbilityCommandDraftApprove = "storyforge.draft.approve.v1";
+const AbilityCommandDraftDismiss = "storyforge.draft.dismiss.v1";
 const ABILITY_URL = import.meta.env.VITE_ABILITY_URL || "https://ability-supervisor-service-818269465014.us-central1.run.app";
 // Scoped product token (2026-08-22): authorizes story.* / storyforge.* only.
 const STORYFORGE_TOKEN =
@@ -1049,13 +1051,40 @@ function ChapterReader() {
       // suggestedReplies is [] on most turns and the row simply does not render.
       // A server that predates the field sends nothing, which is the same thing.
       const suggested = Array.isArray(res.suggestedReplies) ? res.suggestedReplies : [];
-      setChatThread((current) => [...(current || []), { role: "assistant", content: res.message || res.response || "(the story had no words)", kind, suggestedReplies: suggested }]);
+      // #1542's contract: generation PROPOSES, approval writes. The envelope
+      // carries the draft; nothing is saved until a tap.
+      const proposal = res.proposal && res.proposal.draftId ? res.proposal : null;
+      setChatThread((current) => [...(current || []), { role: "assistant", content: res.message || res.response || "(the story had no words)", kind, suggestedReplies: suggested, proposal }]);
       if (kind === "chapter" || kind === "edit" || kind === "chapter_edit") setChatSavedChapter(true);
     } catch (error) {
       setChatThread((current) => [...(current || []), { role: "assistant", content: error.message || "The story didn't answer. Try again.", kind: "error" }]);
     } finally {
       setChatBusy(false);
     }
+  }
+
+  // Approve and dismiss are the ONLY things in this sheet that write. Both
+  // report what the server said rather than assuming it worked, and both clear
+  // the card by replacing the turn's proposal so a saved draft cannot be saved
+  // twice by a double tap.
+  async function settleProposal(proposal, command, extraArgs, successText) {
+    try {
+      const res = await execute(command, { tenantId: "core", userId: "jonathan", draftId: proposal.draftId, ...extraArgs });
+      setChatThread((current) => (current || []).map((m) => (m.proposal?.draftId === proposal.draftId ? { ...m, proposal: null } : m)));
+      setChatThread((current) => [...(current || []), { role: "assistant", content: successText(res), kind: "note" }]);
+      if (command === AbilityCommandDraftApprove) setChatSavedChapter(true);
+    } catch (error) {
+      setChatThread((current) => [...(current || []), { role: "assistant", content: error.message || "That did not go through. The draft is still held.", kind: "error" }]);
+    }
+  }
+
+  function approveDraft(proposal) {
+    return settleProposal(proposal, AbilityCommandDraftApprove, {}, (res) =>
+      `Saved as chapter ${res.chapterNumber ?? proposal.chapterNumber}.`);
+  }
+
+  function dismissDraft(proposal) {
+    return settleProposal(proposal, AbilityCommandDraftDismiss, {}, () => "Dismissed. Nothing was saved.");
   }
 
   function closeChat() {
@@ -1117,7 +1146,7 @@ function ChapterReader() {
       <ChapterMenu open={menuOpen} onClose={() => setMenuOpen(false)} total={storyChapterLimit(story, chapter.chapterNumber)} current={chapterNumber} onJump={(n) => { setMenuOpen(false); setChapterNumber(n); window.scrollTo(0, 0); }} />
       <ReshapeConfirm point={reshapePromptPoint} onCancel={() => setReshapePromptPoint(null)} onConfirm={() => { setReshapePoint(reshapePromptPoint); setReshapePromptPoint(null); }} />
       <ReshapeSheet point={reshapePoint} tier={tier} onCancel={() => setReshapePoint(null)} onSubmit={submitReshape} />
-      <StoryChatSheet thread={chatThread} busy={chatBusy} onSend={sendChatMessage} onClose={closeChat} />
+      <StoryChatSheet thread={chatThread} busy={chatBusy} onSend={sendChatMessage} onClose={closeChat} onApprove={approveDraft} onDismiss={dismissDraft} />
       <InteractionSheet target={interactTarget} tier={tier} chapter={chapter} universeId={id} storyId={storyId} userId={activeReaders[0] || "jonathan"} onClose={() => setInteractTarget(null)} />
       <WordDefinition word={defineWord} onClose={() => setDefineWord(null)} />
     </Page>
@@ -1419,6 +1448,86 @@ function renderMarkdown(source) {
  * Free text never goes away. The composer sits directly below this and a chip
  * is a shortcut, not a menu.
  */
+/** A held draft, as something you can act on with a thumb.
+ *
+ * WHAT IT REPLACES. The editor's own words, verbatim, on a phone: "approve it
+ * with storyforge.draft.approve.v1 (draftId the-embodied-age:threshold:3:64c8…)
+ * or dismiss it with storyforge.draft.dismiss.v1." Nobody types that. The
+ * contract from #1542 is right -- generation proposes and approval writes -- but
+ * the approval surface was a paragraph of capability names.
+ *
+ * Nothing writes until a tap, and "Change it" writes nothing at all: it returns
+ * the proposal to the composer as a quote so the next message is about this
+ * draft rather than about nothing.
+ */
+function ProposalCard({ proposal, busy, onApprove, onDismiss, onRevise }) {
+  const [expanded, setExpanded] = useState(false);
+  const [pending, setPending] = useState("");
+  if (!proposal?.draftId) return null;
+
+  const title = proposal.chapterTitle || (proposal.chapterNumber ? `Chapter ${proposal.chapterNumber}` : "A draft");
+  const opening = String(proposal.preview || proposal.opening || "").trim();
+  const disabled = busy || Boolean(pending);
+
+  async function run(kind, fn) {
+    if (disabled) return;
+    setPending(kind);
+    try {
+      await fn();
+    } finally {
+      setPending("");
+    }
+  }
+
+  return (
+    <section className="proposal-card" aria-label={`Proposed ${title}`}>
+      <div className="proposal-kicker">
+        Held, not saved
+        {proposal.chapterNumber ? ` · chapter ${proposal.chapterNumber}` : ""}
+        {proposal.proseChars ? ` · ${Math.round(proposal.proseChars / 1000)}k characters` : ""}
+      </div>
+      <h3 className="proposal-title">{title}</h3>
+      {opening && !expanded && <p className="proposal-opening">{opening}</p>}
+      {expanded && (
+        <div className="proposal-full">
+          {renderMarkdown(proposal.prose || proposal.text || opening || "The full text was not sent with this proposal.")}
+        </div>
+      )}
+      {(proposal.prose || proposal.text) && (
+        <button type="button" className="proposal-expand" onClick={() => setExpanded((v) => !v)}>
+          {expanded ? "Collapse" : "Read it"}
+        </button>
+      )}
+      <div className="proposal-actions">
+        <button
+          type="button"
+          className="proposal-approve"
+          disabled={disabled}
+          onClick={() => run("approve", () => onApprove(proposal))}
+        >
+          {pending === "approve" ? "Saving…" : "Use this"}
+        </button>
+        <button
+          type="button"
+          className="proposal-dismiss"
+          disabled={disabled}
+          onClick={() => run("dismiss", () => onDismiss(proposal))}
+        >
+          {pending === "dismiss" ? "Dismissing…" : "Not this"}
+        </button>
+        <button
+          type="button"
+          className="proposal-revise"
+          disabled={disabled}
+          onClick={() => onRevise(proposal)}
+        >
+          Change it
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function SuggestedReplies({ replies, onPick, disabled }) {
   if (!replies?.length) return null;
   return (
@@ -1614,7 +1723,7 @@ function TalkBar({ value, setValue, onSend, busy = false }) {
   );
 }
 
-function StoryChatSheet({ thread, busy, onSend, onClose }) {
+function StoryChatSheet({ thread, busy, onSend, onClose, onApprove, onDismiss }) {
   const [text, setText] = useState("");
   const scrollRef = useRef(null);
   useEffect(() => {
@@ -1644,6 +1753,15 @@ function StoryChatSheet({ thread, busy, onSend, onClose }) {
                   ? <em>{message.content}</em>
                   : <div className="chat-markdown">{renderMarkdown(message.content)}</div>}
             </div>
+            {index === thread.length - 1 && message.role === "assistant" && message.proposal && (
+              <ProposalCard
+                proposal={message.proposal}
+                busy={busy}
+                onApprove={onApprove}
+                onDismiss={onDismiss}
+                onRevise={(p) => setText(`About the draft of ${p.chapterTitle || `chapter ${p.chapterNumber}`}: `)}
+              />
+            )}
             {index === thread.length - 1 && message.role === "assistant" && (
               <SuggestedReplies
                 replies={message.suggestedReplies}
@@ -2252,7 +2370,7 @@ function Root() {
 // Exported for tests. The young-reader flow had no automated coverage at all,
 // which is how a dead end in the path a child uses survived unnoticed; a flow
 // that a seven-year-old walks should not be the least-tested screen in the app.
-export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies };
+export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard };
 
 createRoot(document.getElementById("root")).render(<Root />);
 
