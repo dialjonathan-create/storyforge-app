@@ -27,11 +27,23 @@ import path from "node:path";
 const PANEL = readFileSync(path.join(process.cwd(), "src/NarrationPanel.jsx"), "utf8");
 const CSS = readFileSync(path.join(process.cwd(), "src/styles.css"), "utf8");
 
-/** The narration block of the stylesheet, comments stripped. */
+/**
+ * Every rule in the stylesheet whose selector mentions narration, and nothing
+ * else.
+ *
+ * This used to be `CSS.slice(CSS.indexOf(".narration-bar {"))` — everything
+ * from the narration bar to the END OF THE FILE. That was only ever correct
+ * because the narration rules happened to be last; the first block appended
+ * after them (the story map, 2026-09-13) turned "the player names no colour"
+ * into "nothing below this point in the stylesheet names a colour", which is
+ * not a claim about the player at all.
+ */
 function narrationCss() {
-  const start = CSS.indexOf(".narration-bar {");
-  expect(start).toBeGreaterThan(-1);
-  return CSS.slice(start).replace(/\/\*[\s\S]*?\*\//g, "");
+  const clean = CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = clean.match(/[^{}]+\{[^{}]*\}/g) || [];
+  const mine = rules.filter((rule) => /narration/.test(rule.slice(0, rule.indexOf("{"))));
+  expect(mine.length).toBeGreaterThan(0);
+  return mine.join("\n");
 }
 
 /** JSX with comments stripped, so a hex quoted in a comment is not a finding. */
