@@ -13,14 +13,22 @@ export function stripHtmlComments(text) {
 
 const DEFAULT_VOICE_ID = "af_heart";
 
-export default function NarrationPanel({ chapter }) {
+export default function NarrationPanel({ chapter, voiceId }) {
   const [voices, setVoices] = useState([]);
   // The id the synth API wants, not anything a person should ever read. The
-  // human-readable name and the picker belong in the settings sheet; until that
-  // exists this is a default nobody sees.
-  const [selectedVoice, setSelectedVoice] = useState(
-    () => localStorage.getItem("storyforge_narrator_voice") || DEFAULT_VOICE_ID
-  );
+  // picker that turns it into a name now lives in the drawer under the reading
+  // page, and hands the chosen id down as `voiceId` -- so changing the voice
+  // mid-chapter restarts playback in the new one rather than waiting for a
+  // remount that never comes.
+  const [storedVoice, setStoredVoice] = useState(() => {
+    try {
+      return localStorage.getItem("storyforge_narrator_voice") || DEFAULT_VOICE_ID;
+    } catch {
+      return DEFAULT_VOICE_ID;
+    }
+  });
+  const selectedVoice = voiceId || storedVoice;
+  const setSelectedVoice = setStoredVoice;
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [error, setError] = useState(null);
@@ -52,7 +60,11 @@ export default function NarrationPanel({ chapter }) {
   }, [chapter]);
 
   useEffect(() => {
-    localStorage.setItem("storyforge_narrator_voice", selectedVoice);
+    try {
+      localStorage.setItem("storyforge_narrator_voice", selectedVoice);
+    } catch {
+      /* a remembered voice is a nicety; losing it must not stop narration */
+    }
     // Restart if changing voice while playing
     if (isPlaying) {
       stop();

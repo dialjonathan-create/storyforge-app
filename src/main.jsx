@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, usePa
 import { AnimatePresence, motion } from "framer-motion";
 import "./styles.css";
 import NarrationPanel from "./NarrationPanel";
+import { fetchVoices } from "./kokoro";
 
 const AbilityCommandDraftApprove = "storyforge.draft.approve.v1";
 const AbilityCommandDraftDismiss = "storyforge.draft.dismiss.v1";
@@ -989,7 +990,28 @@ function LoreSection({ title, children }) {
 function ChapterReader() {
   const { id, storyId } = useParams();
   const nav = useNavigate();
-  const { readingGroup, activeReaders, setCurrentStory } = useApp();
+  const { readingGroup, activeReaders, users, setCurrentStory } = useApp();
+  // Narration settings live in the drawer, not on the page: the reason the
+  // picker never shipped was that there was nowhere to put it that did not
+  // cover the chapter.
+  const [voices, setVoices] = useState([]);
+  const [voice, setVoice] = useState(readNarratorVoice);
+  useEffect(() => {
+    let cancelled = false;
+    fetchVoices().then((v) => { if (!cancelled) setVoices(Array.isArray(v) ? v : []); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  function chooseVoice(next) {
+    setVoice(next);
+    try { localStorage.setItem(NARRATOR_VOICE_KEY, next); } catch { /* a picker is not worth a crash */ }
+  }
+  // Switching readers switches identity, so it clears the remembered default
+  // and goes back to the picker -- the same thing the header avatar did, now
+  // with a label on it.
+  function switchReaders() {
+    try { localStorage.removeItem("storyforge_default_reader"); } catch { /* ignore */ }
+    nav("/");
+  }
   const [story, setStory] = useState(null);
   const [chapter, setChapter] = useState(null);
   const [chapterNumber, setChapterNumber] = useState(null);
@@ -1437,7 +1459,7 @@ function ChapterReader() {
         <div className="chapter-kicker">Chapter {chapter.chapterNumber}</div>
         <h1>{chapter.chapterTitle}</h1>
         <div className="gold-divider" />
-        <NarrationPanel chapter={chapter} />
+        <NarrationPanel chapter={chapter} voiceId={voice} />
         <ChapterImages chapter={chapter} tier={tier} onHeroLoad={() => setProseReady(true)} />
         {/* Separate boundaries so the chapter and the conversation cannot take
             each other down. A crash in the sheet should not cost the page a
@@ -1453,7 +1475,21 @@ function ChapterReader() {
             the 💬 in the header opens, and it sat there permanently taking a
             third of the reading view to do it. The reading view is prose. */}
       </motion.article>
-      <ChapterMenu open={menuOpen} onClose={() => setMenuOpen(false)} total={storyChapterLimit(story, chapter.chapterNumber)} current={chapterNumber} onJump={(n) => { setMenuOpen(false); setChapterNumber(n); window.scrollTo(0, 0); }} textScale={textScale} onTextScale={changeTextScale} onSaveSpot={() => { setMenuOpen(false); saveBookmarkHere(); }} />
+      <ChapterMenu
+        open={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        total={storyChapterLimit(story, chapter.chapterNumber)}
+        current={chapterNumber}
+        onJump={(n) => { setMenuOpen(false); setChapterNumber(n); window.scrollTo(0, 0); }}
+        textScale={textScale}
+        onTextScale={changeTextScale}
+        onSaveSpot={() => { setMenuOpen(false); saveBookmarkHere(); }}
+        voices={voices}
+        voice={voice}
+        onVoice={chooseVoice}
+        readerName={userFor(activeReaders[0] || "jonathan", users).displayName}
+        onSwitchReader={() => { setMenuOpen(false); switchReaders(); }}
+      />
       <ReshapeConfirm point={reshapePromptPoint} onCancel={() => setReshapePromptPoint(null)} onConfirm={() => { setReshapePoint(reshapePromptPoint); setReshapePromptPoint(null); }} />
       <ReshapeSheet point={reshapePoint} tier={tier} onCancel={() => setReshapePoint(null)} onSubmit={submitReshape} />
       <ErrorBoundary
@@ -2458,7 +2494,74 @@ export function TextSizeControl({ scale, onChange }) {
   );
 }
 
-function ChapterMenu({ open, onClose, total, current, onJump, textScale = 1, onTextScale, onSaveSpot }) {
+/**
+ * A narrator's name, out of a synthesiser's id.
+ *
+ * Kokoro ships ids like `af_heart` and `bm_george`: first letter the accent,
+ * second the voice's gender, then the name. That is a fine key and a terrible
+ * label -- `NarrationPanel` has carried the comment "the human-readable name
+ * and the picker belong in the settings sheet; until that exists this is a
+ * default nobody sees" since the panel was written. This is that sheet.
+ *
+ * Unknown ids are not dropped: a voice the server adds tomorrow shows up with
+ * whatever of its name can be read, rather than disappearing from the list.
+ */
+const VOICE_ACCENTS = { a: "American", b: "British", e: "Spanish", f: "French", i: "Italian", j: "Japanese", p: "Portuguese", z: "Chinese" };
+const VOICE_REGISTERS = { f: "warm", m: "low" };
+
+export function voiceLabel(voiceId) {
+  const id = String(voiceId || "").trim();
+  if (!id) return "";
+  const match = /^([a-z])([fm])_(.+)$/i.exec(id);
+  if (!match) return id.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const [, accent, register, rawName] = match;
+  const name = rawName.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const accentName = VOICE_ACCENTS[accent.toLowerCase()];
+  const registerName = VOICE_REGISTERS[register.toLowerCase()];
+  const parts = [accentName, registerName].filter(Boolean);
+  return parts.length ? `${name} — ${parts.join(", ")}` : name;
+}
+
+export const NARRATOR_VOICE_KEY = "storyforge_narrator_voice";
+
+export function readNarratorVoice(fallback = "af_heart") {
+  try {
+    return localStorage.getItem(NARRATOR_VOICE_KEY) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * The voice picker, in the drawer rather than on the reading page.
+ *
+ * It is a list of buttons and not a `<select>`: a native select on iOS opens a
+ * full-screen wheel over the chapter, and the point of putting this in the
+ * drawer was to stop narration controls covering the words.
+ */
+export function VoiceChoice({ voices, value, onChange }) {
+  const list = (voices || []).map((v) => (typeof v === "string" ? v : v?.id || v?.voice || v?.name)).filter(Boolean);
+  if (!list.length) return <p className="drawer-note">Voices load when narration is available.</p>;
+  return (
+    <div className="voice-choice" role="radiogroup" aria-label="Narrator voice">
+      {list.map((id) => (
+        <button
+          key={id}
+          type="button"
+          role="radio"
+          aria-checked={id === value}
+          className={id === value ? "voice-option current" : "voice-option"}
+          onClick={() => onChange(id)}
+        >
+          {voiceLabel(id)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+
+function ChapterMenu({ open, onClose, total, current, onJump, textScale = 1, onTextScale, onSaveSpot, voices = [], voice, onVoice, onSwitchReader, readerName }) {
   return (
     <AnimatePresence>
       {open && (
@@ -2477,6 +2580,22 @@ function ChapterMenu({ open, onClose, total, current, onJump, textScale = 1, onT
               <>
                 <h2>Text size</h2>
                 <TextSizeControl scale={textScale} onChange={onTextScale} />
+              </>
+            )}
+            {onVoice && (
+              <>
+                <h2>Reading voice</h2>
+                <VoiceChoice voices={voices} value={voice} onChange={onVoice} />
+              </>
+            )}
+            {onSwitchReader && (
+              <>
+                <h2>Who's reading</h2>
+                {/* It was a tap on the avatar in the header and nothing said so.
+                    Same action, now with a name on it. */}
+                <button className="outline-button menu-switch-reader" type="button" onClick={onSwitchReader}>
+                  {readerName ? `Reading as ${readerName} — switch` : "Switch readers"}
+                </button>
               </>
             )}
             <h2>Chapters</h2>
