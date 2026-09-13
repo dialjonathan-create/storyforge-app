@@ -770,6 +770,31 @@ h3 {
   line-height: 0.8;
 }
 
+/* A scene break. The prose writes it as `***` or `— ◈ —`, and until now the
+   reader printed those three asterisks as a paragraph of their own. */
+.scene-break {
+  width: 100%;
+  height: auto;
+  margin: 2.2em auto;
+  border: 0;
+  color: var(--gold-dim);
+  text-align: center;
+  overflow: visible;
+}
+
+.scene-break::before {
+  content: "◈";
+  display: block;
+  color: var(--gold-light);
+  font-size: 0.85em;
+  letter-spacing: 0.4em;
+  opacity: 0.75;
+}
+
+/* A paragraph after a scene break is not the first paragraph, so it must not
+   get the drop cap -- which the :first-child selector already handles, and
+   this comment exists so the next person does not "fix" it to :first-of-type. */
+
 .chapter-image {
   display: block;
   width: 100%;
