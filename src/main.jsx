@@ -660,7 +660,14 @@ function UniverseDetail() {
                 </AnimatePresence>
                 <button className="outline-button" onClick={() => nav(`/universes/${id}/new-story`)}>+ Begin a New Story</button>
               </div>
-            ) : <Lore data={data} />}
+            ) : (
+              // The tab that took the app down on 2026-09-13. A bible field
+              // that is a string where the code expected an array must cost
+              // this panel and nothing more.
+              <ErrorBoundary name="the lore" resetKey={id}>
+                <Lore data={data} />
+              </ErrorBoundary>
+            )}
           </>
         )}
       </section>
@@ -746,20 +753,183 @@ function ConfirmModal({ open, title, message, confirmLabel = "Confirm", onCancel
   );
 }
 
+/**
+ * The thing that was missing when the Lore tab took the whole app down.
+ *
+ * 2026-09-13: `Lore` called `.map` on `bible.worldRules`, which on
+ * `the-embodied-age` is a 1,243-character STRING. `.map` is not a string
+ * method, so it threw during render. There was no boundary anywhere in the
+ * app — no `componentDidCatch`, no `getDerivedStateFromError` — so React did
+ * what React does with an unhandled render error and **unmounted the whole
+ * tree**. The screen went to the background gradient and the only way out was
+ * force-quitting.
+ *
+ * That is the part worth fixing permanently. The `.map` was one line in one
+ * component; the blank screen was the architecture. A child holding this phone
+ * should never lose the app because one panel is unhappy.
+ *
+ * Class component on purpose: error boundaries have no hook equivalent. React
+ * still offers no way to catch a render error from inside a function component.
+ */
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    // No telemetry to send this to yet. The console is at least reachable from
+    // a tethered device, and swallowing it entirely would make the next one
+    // just as hard to find as this one was.
+    console.error(`[storyforge] ${this.props.name || "screen"} failed to render`, error, info);
+  }
+
+  componentDidUpdate(previous) {
+    // A boundary that latches forever turns one bad render into a permanently
+    // dead panel. Navigating away and back, or switching tabs, should get a
+    // fresh attempt.
+    if (this.state.error && previous.resetKey !== this.props.resetKey) {
+      this.setState({ error: null });
+    }
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    if (this.props.fallback) return this.props.fallback(this.state.error);
+    return (
+      <div className="boundary-fallback" role="alert">
+        <h2>This part didn't open</h2>
+        <p>
+          Something went wrong showing {this.props.name || "this screen"}. Nothing was lost —
+          the story and everything in it are fine.
+        </p>
+        <button className="outline-button" type="button" onClick={() => this.setState({ error: null })}>
+          Try again
+        </button>
+      </div>
+    );
+  }
+}
+
 function Progress({ value, max }) {
   return <div className="progress-track"><span style={{ width: `${Math.min(100, (value / Math.max(1, max)) * 100)}%` }} /></div>;
 }
 
+/**
+ * Split a prose field into paragraphs. Blank lines first, since that is how the
+ * editor writes them; a single unbroken block stays one paragraph rather than
+ * being chopped at every newline, which would shred a wrapped sentence.
+ */
+export function loreParagraphs(value) {
+  if (typeof value !== "string") return [];
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  const byBlankLine = trimmed.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
+  if (byBlankLine.length > 1) return byBlankLine;
+  return trimmed.split(/\n/).map((part) => part.trim()).filter(Boolean);
+}
+
+/**
+ * One bible field, whatever shape it actually is.
+ *
+ * These fields are written by two different paths — a structured update that
+ * produces arrays and a prose update that produces strings — so the SAME key is
+ * a list on one universe and a paragraph on another. `the-embodied-age` has
+ * `establishedFacts` as a 5-item array and `worldRules` as a 1,243-character
+ * string, side by side in one document.
+ *
+ * So: check the shape, never assume it. A string renders as prose, an array
+ * renders as cards, and anything else renders nothing at all rather than
+ * `[object Object]` or a crash.
+ */
+export function LoreField({ title, value, render, className = "lore-card" }) {
+  if (Array.isArray(value)) {
+    const items = value.filter((item) => item != null && item !== "");
+    if (!items.length) return null;
+    return (
+      <LoreSection title={title}>
+        {items.map((item, i) => (
+          <div className={className} key={i}>{render ? render(item, i) : loreText(item)}</div>
+        ))}
+      </LoreSection>
+    );
+  }
+  const paragraphs = loreParagraphs(value);
+  if (!paragraphs.length) return null;
+  return (
+    <LoreSection title={title}>
+      {paragraphs.map((paragraph, i) => <p className="lore-paragraph" key={i}>{paragraph}</p>)}
+    </LoreSection>
+  );
+}
+
+/** A value a person can read. Never "[object Object]". */
+export function loreText(item) {
+  if (typeof item === "string") return item;
+  if (item && typeof item === "object") return item.text || item.description || item.name || item.event || "";
+  return item == null ? "" : String(item);
+}
+
+/**
+ * The character list. `storyforge.universe.get.v1` returns `characters: []` at
+ * the top level for `the-embodied-age` while `lore.characters` holds all 11, so
+ * the section was empty even before the crash.
+ *
+ * Those entries carry `name`, `role` and `universeId` — no `characterId` and no
+ * `description`. Keying on `characterId` gave every card the key `undefined`,
+ * and the body read `description`, which is not there.
+ */
+export function loreCharacters(data) {
+  const top = Array.isArray(data?.characters) ? data.characters : [];
+  if (top.length) return top;
+  return Array.isArray(data?.lore?.characters) ? data.lore.characters : [];
+}
+
 function Lore({ data }) {
   const bible = data?.bible || {};
-  const characters = data?.characters || [];
+  const characters = loreCharacters(data);
   return (
     <div className="lore">
-      <LoreSection title="World Rules">{(bible.worldRules || []).map((rule, i) => <div className="lore-card italic" key={i}>{rule}</div>)}</LoreSection>
-      <LoreSection title="Characters">{characters.map((c) => <div className="lore-card" key={c.characterId}><h3>{c.name}</h3><p>{c.description}</p><span>{c.role}</span><small>{c.currentStatus}</small></div>)}</LoreSection>
-      <LoreSection title="Locations">{(bible.locations || []).map((loc, i) => <div className="lore-card" key={i}><h3>{loc.name || "Unknown"}</h3><p>{loc.description || String(loc)}</p></div>)}</LoreSection>
-      <LoreSection title="Open Mysteries">{(bible.openMysteries || []).map((m, i) => <div className="lore-card muted-card" key={i}>Something stirs in {String(m).replace(/^where|what|who/i, "").trim()}...</div>)}</LoreSection>
-      <LoreSection title="Lore Entries">{(bible.lore || []).map((entry, i) => <p className="lore-paragraph" key={i}>{entry}</p>)}</LoreSection>
+      <LoreField title="World Rules" value={bible.worldRules} className="lore-card italic" />
+      <LoreSection title="Characters">
+        {characters.map((c, i) => (
+          // Key on the name, which these entries do have, with the index as the
+          // tiebreak for two characters sharing one.
+          <div className="lore-card" key={`${c.name || "character"}-${i}`}>
+            <h3>{c.name || "Unnamed"}</h3>
+            {/* `role` carries the description on lore entries; `description`
+                only exists on the structured character records. Whichever is
+                present is the body, and it is never printed twice. */}
+            {(c.description || c.role) && <p>{c.description || c.role}</p>}
+            {c.description && c.role && <span>{c.role}</span>}
+            {c.currentStatus && <small>{c.currentStatus}</small>}
+          </div>
+        ))}
+      </LoreSection>
+      <LoreField
+        title="Locations"
+        value={bible.locations}
+        render={(loc) => (loc && typeof loc === "object"
+          ? <><h3>{loc.name || "Unknown"}</h3><p>{loc.description || ""}</p></>
+          : loreText(loc))}
+      />
+      <LoreField title="Factions" value={bible.factions} />
+      {/* The "Something stirs in..." voice only works on a short list item.
+          On a 579-character paragraph it would be absurd, so the flourish stays
+          with the array shape it was written for. */}
+      <LoreField
+        title="Open Mysteries"
+        value={bible.openMysteries}
+        className="lore-card muted-card"
+        render={(m) => `Something stirs in ${loreText(m).replace(/^where|what|who/i, "").trim()}...`}
+      />
+      <LoreField title="Established Facts" value={bible.establishedFacts} />
+      <LoreField title="Where Things Stand" value={bible.worldState} />
+      <LoreField title="Lore Entries" value={bible.lore} />
     </div>
   );
 }
@@ -1212,7 +1382,14 @@ function ChapterReader() {
         <div className="gold-divider" />
         <NarrationPanel chapter={chapter} />
         <ChapterImages chapter={chapter} tier={tier} onHeroLoad={() => setProseReady(true)} />
-        {proseReady && <Prose chapter={chapter} tier={tier} entities={entities} onLongPress={setReshapePromptPoint} onEntityTap={setInteractTarget} onWordTap={tier !== 1 ? setDefineWord : undefined} pulseFrom={reshapedPulse ? reshapeAnchor?.index : null} />}
+        {/* Separate boundaries so the chapter and the conversation cannot take
+            each other down. A crash in the sheet should not cost the page a
+            child is reading, and vice versa. */}
+        {proseReady && (
+          <ErrorBoundary name="this chapter" resetKey={`${storyId}:${chapterNumber}`}>
+            <Prose chapter={chapter} tier={tier} entities={entities} onLongPress={setReshapePromptPoint} onEntityTap={setInteractTarget} onWordTap={tier !== 1 ? setDefineWord : undefined} pulseFrom={reshapedPulse ? reshapeAnchor?.index : null} />
+          </ErrorBoundary>
+        )}
         {choiceRevealPending && <div className="choice-sweep" />}
         <ChoicePanel visible={choicesVisible} chapter={chapter} readers={activeReaders} onChoose={choose} showTooltip={showChoiceTooltip} onDismissTooltip={() => setShowChoiceTooltip(false)} />
         {tier !== 1 && <TalkBar value={talkText} setValue={setTalkText} onSend={sendChatMessage} busy={chatBusy} />}
@@ -1220,7 +1397,24 @@ function ChapterReader() {
       <ChapterMenu open={menuOpen} onClose={() => setMenuOpen(false)} total={storyChapterLimit(story, chapter.chapterNumber)} current={chapterNumber} onJump={(n) => { setMenuOpen(false); setChapterNumber(n); window.scrollTo(0, 0); }} textScale={textScale} onTextScale={changeTextScale} />
       <ReshapeConfirm point={reshapePromptPoint} onCancel={() => setReshapePromptPoint(null)} onConfirm={() => { setReshapePoint(reshapePromptPoint); setReshapePromptPoint(null); }} />
       <ReshapeSheet point={reshapePoint} tier={tier} onCancel={() => setReshapePoint(null)} onSubmit={submitReshape} />
-      <StoryChatSheet thread={chatThread} busy={chatBusy} onSend={sendChatMessage} onClose={closeChat} onApprove={approveDraft} onDismiss={dismissDraft} />
+      <ErrorBoundary
+        name="the conversation"
+        resetKey={chatThread ? "open" : "closed"}
+        fallback={() => (
+          <div className="bottom-sheet">
+            <button className="sheet-shade" onClick={closeChat} />
+            <section className="sheet-panel">
+              <div className="boundary-fallback" role="alert">
+                <h2>The conversation didn't open</h2>
+                <p>Something went wrong here. Nothing you said was lost — it is saved with the story.</p>
+                <button className="outline-button" type="button" onClick={closeChat}>Close</button>
+              </div>
+            </section>
+          </div>
+        )}
+      >
+        <StoryChatSheet thread={chatThread} busy={chatBusy} onSend={sendChatMessage} onClose={closeChat} onApprove={approveDraft} onDismiss={dismissDraft} />
+      </ErrorBoundary>
       <InteractionSheet target={interactTarget} tier={tier} chapter={chapter} universeId={id} storyId={storyId} userId={activeReaders[0] || "jonathan"} onClose={() => setInteractTarget(null)} />
       <WordDefinition word={defineWord} onClose={() => setDefineWord(null)} />
     </Page>
@@ -2615,24 +2809,59 @@ function Root() {
   return (
     <BrowserRouter>
       <AppProvider>
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/universes" element={<UniverseList />} />
-          <Route path="/universes/new" element={<NewUniverse />} />
-          <Route path="/universes/:id" element={<UniverseDetail />} />
-          <Route path="/universes/:id/new-story" element={<NewStory />} />
-          <Route path="/universes/:id/stories/:storyId" element={<ChapterReader />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        {/* The outermost net. Nothing below this can blank the app: the worst
+            case is one screen replaced by a message and a way back. */}
+        <RoutedBoundary>
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route path="/universes" element={<UniverseList />} />
+            <Route path="/universes/new" element={<NewUniverse />} />
+            <Route path="/universes/:id" element={<UniverseDetail />} />
+            <Route path="/universes/:id/new-story" element={<NewStory />} />
+            <Route path="/universes/:id/stories/:storyId" element={<ChapterReader />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </RoutedBoundary>
       </AppProvider>
     </BrowserRouter>
+  );
+}
+
+/**
+ * The app-level boundary, with a way out that is a real way out.
+ *
+ * `resetKey` is the pathname, so the boundary clears itself the moment the
+ * reader navigates somewhere else — otherwise one bad render would latch and
+ * every subsequent screen would show the same apology.
+ */
+function RoutedBoundary({ children }) {
+  const location = useLocation();
+  const nav = useNavigate();
+  return (
+    <ErrorBoundary
+      name="this screen"
+      resetKey={location.pathname}
+      fallback={() => (
+        <div className="page">
+          <div className="boundary-fallback" role="alert">
+            <h2>This screen didn't open</h2>
+            <p>Something went wrong here. Nothing was lost — every story is still saved.</p>
+            <button className="gold-button" type="button" onClick={() => nav("/universes")}>
+              Back to the universes
+            </button>
+          </div>
+        </div>
+      )}
+    >
+      {children}
+    </ErrorBoundary>
   );
 }
 
 // Exported for tests. The young-reader flow had no automated coverage at all,
 // which is how a dead end in the path a child uses survived unnoticed; a flow
 // that a seven-year-old walks should not be the least-tested screen in the app.
-export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard };
+export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard, ErrorBoundary, Lore };
 
 createRoot(document.getElementById("root")).render(<Root />);
 
