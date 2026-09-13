@@ -7,6 +7,7 @@ import NarrationPanel from "./NarrationPanel";
 
 const AbilityCommandDraftApprove = "storyforge.draft.approve.v1";
 const AbilityCommandDraftDismiss = "storyforge.draft.dismiss.v1";
+const AbilityCommandConversationList = "storyforge.conversation.list.v1";
 const ABILITY_URL = import.meta.env.VITE_ABILITY_URL || "https://ability-supervisor-service-818269465014.us-central1.run.app";
 // Scoped product token (2026-08-22): authorizes story.* / storyforge.* only.
 const STORYFORGE_TOKEN =
@@ -1032,8 +1033,48 @@ function ChapterReader() {
   // emits a write tag. The old Ask/Change toggle forced that routing choice
   // onto the reader at the keyboard, with Ask landing in the stateless
   // per-entity Q&A and Change firing an immediate reshape.
+  // Everything said in the sheet is already persisted by converse.v1 — both
+  // halves of every turn. Until storyforge.conversation.list.v1 existed nothing
+  // could read it back, so the client threw the thread away on close and a
+  // ten-minute conversation about chapter 2 was gone. This brings it back.
+  //
+  // It is deliberately best-effort: history is a nicety, and a sheet that
+  // refuses to open because an old transcript would not load is worse than a
+  // sheet that opens empty. A server that predates the capability lands here
+  // too, and behaves exactly as it did yesterday.
+  async function loadChatHistory() {
+    if (!storyId) return;
+    try {
+      const res = await execute(AbilityCommandConversationList, {
+        tenantId: "core",
+        userId: activeReaders[0] || "jonathan",
+        universeId: id,
+        storyId,
+      });
+      const turns = Array.isArray(res.turns) ? res.turns : [];
+      if (!turns.length) return;
+      setChatThread((current) => mergeConversationHistory(turns, current || []));
+    } catch {
+      /* the sheet still works without it */
+    }
+  }
+
+  // Opening the sheet without saying anything. Before this there was no way to
+  // re-read a conversation at all: the only thing that opened the sheet was
+  // typing into the talk bar.
+  function openChat() {
+    if (chatThread) return;
+    setChatThread([]);
+    loadChatHistory();
+  }
+
   async function sendChatMessage(text) {
+    const opening = !chatThread;
     setChatThread((current) => [...(current || []), { role: "user", content: text }]);
+    // Fired before converse.v1 is issued so the history is almost always the
+    // state before this turn; mergeConversationHistory handles the case where
+    // it is not.
+    if (opening) loadChatHistory();
     setChatBusy(true);
     try {
       const res = await execute("storyforge.converse.v1", {
@@ -1116,9 +1157,16 @@ function ChapterReader() {
       <header className="reader-header">
         <button className="icon-button" onClick={() => nav(`/universes/${id}`)}>←</button>
         <div className="reader-title">{story?.title || "Story"}</div>
-        <button className="icon-button" onClick={saveBookmarkHere} aria-label="Save your spot here">🔖</button>
-        <button className="icon-button" onClick={() => setMenuOpen(true)}>≡</button>
-        <Avatars ids={activeReaders} />
+        {/* Grouped rather than four more grid columns: the 💬 is conditional,
+            and a fixed template leaves a hole in the header for tier 1. */}
+        <div className="reader-header-actions">
+          <button className="icon-button" onClick={saveBookmarkHere} aria-label="Save your spot here">🔖</button>
+          {/* The only way into the sheet used to be typing into the talk bar,
+              which made the conversation invisible until you started a new one. */}
+          {tier !== 1 && <button className="icon-button" onClick={openChat} aria-label="Open the conversation">💬</button>}
+          <button className="icon-button" onClick={() => setMenuOpen(true)}>≡</button>
+          <Avatars ids={activeReaders} />
+        </div>
       </header>
       <AnimatePresence>
         {bookmarkFlash && (
@@ -1723,6 +1771,69 @@ function TalkBar({ value, setValue, onSend, busy = false }) {
   );
 }
 
+/**
+ * What to write on the line between the conversation you are re-reading and the
+ * one you are having now.
+ *
+ * Deliberately coarse — "Earlier today", "Yesterday", or the date. A timestamp
+ * to the minute is precision nobody asked for, and the only question the line
+ * has to answer is how long ago that was. Anything unparseable falls back to
+ * "Earlier" rather than rendering `Invalid Date` into a child's screen.
+ */
+export function historyDividerLabel(iso, now = new Date()) {
+  const then = iso ? new Date(iso) : null;
+  if (!then || Number.isNaN(then.getTime())) return "Earlier";
+  const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((day(now) - day(then)) / 86400000);
+  if (days <= 0) return "Earlier today";
+  if (days === 1) return "Yesterday";
+  return then.toLocaleDateString(undefined, { month: "long", day: "numeric" });
+}
+
+/**
+ * Put a thread read back from the server in front of whatever is already on
+ * screen, without saying anything twice.
+ *
+ * The sheet opens and fetches at the same moment the first message is sent, so
+ * the two can land in either order. If the fetch is slow enough that
+ * `converse.v1` has already persisted the turn it is carrying, that turn comes
+ * back in the history as well — and a transcript that repeats what you just
+ * said reads as a bug even though nothing is wrong.
+ *
+ * So: drop history entries off the tail that are already at the head of the
+ * local thread. Exported for the tests, which is the only reason this is not
+ * an inner function.
+ */
+export function mergeConversationHistory(history, local) {
+  const older = (history || []).map((turn) => ({
+    role: turn.role,
+    content: turn.content,
+    createdAt: turn.createdAt,
+    kind: "conversation",
+    history: true,
+  }));
+  const current = local || [];
+  const same = (a, b) => Boolean(a) && Boolean(b) && a.role === b.role && a.content === b.content;
+  // The longest run where the END of the history is the START of what is on
+  // screen. Only a tail-to-head run counts: a phrase repeated by coincidence in
+  // the middle of an old conversation is a real thing the person said twice.
+  let overlap = 0;
+  for (let k = Math.min(older.length, current.length); k > 0; k -= 1) {
+    let matches = true;
+    for (let i = 0; i < k; i += 1) {
+      if (!same(older[older.length - k + i], current[i])) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) {
+      overlap = k;
+      break;
+    }
+  }
+  return [...older.slice(0, older.length - overlap), ...current];
+}
+
 function StoryChatSheet({ thread, busy, onSend, onClose, onApprove, onDismiss }) {
   const [text, setText] = useState("");
   const scrollRef = useRef(null);
@@ -1740,8 +1851,17 @@ function StoryChatSheet({ thread, busy, onSend, onClose, onApprove, onDismiss })
             scroll as a whole, so a forty-line reply pushed the compose row off
             the bottom and there was nothing to type into. */}
         <div className="chat-scroll" ref={scrollRef}>
+          {!thread.length && !busy && (
+            <div className="chat-empty">Nothing said about this story yet.</div>
+          )}
           {thread.map((message, index) => (
             <React.Fragment key={index}>
+            {/* Where the conversation you are re-reading ends and this sitting
+                begins. Without it, an hour-old exchange and the thing you just
+                typed look like one continuous conversation. */}
+            {!message.history && thread[index - 1]?.history && (
+              <div className="chat-divider"><span>{historyDividerLabel(thread[index - 1]?.createdAt)}</span></div>
+            )}
             <div className={message.role === "user" ? "chat-line chat-user" : "chat-line chat-story"}>
               {/* The person's own turn stays exactly as they typed it: they know
                   what they wrote, and reinterpreting their asterisks would be
