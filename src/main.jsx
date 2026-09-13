@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import "./styles.css";
 import NarrationPanel from "./NarrationPanel";
 import { fetchVoices } from "./kokoro";
+import StoryMap, { mappablePlaces } from "./StoryMap";
 
 const AbilityCommandDraftApprove = "storyforge.draft.approve.v1";
 const AbilityCommandDraftDismiss = "storyforge.draft.dismiss.v1";
@@ -957,6 +958,11 @@ function Lore({ data }) {
           </div>
         ))}
       </LoreSection>
+      {/* One map for the story, above the places it belongs to -- rather than a
+          map per location, which is five downloads of the same tiles and five
+          places to tap. It renders only when the bible says where somewhere
+          actually is. */}
+      <StoryMap places={mappablePlaces(bible.locations)} />
       <LoreField
         title="Locations"
         value={bible.locations}
