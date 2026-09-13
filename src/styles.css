@@ -1721,3 +1721,40 @@ h3 {
   color: var(--text-secondary);
   font-size: 0.95rem;
 }
+
+
+/* --- Error boundary fallback -------------------------------------------
+ *
+ * 2026-09-13: one `.map` on a string unmounted the entire app to a blank
+ * gradient, because there was no boundary anywhere. This is what a failure is
+ * allowed to look like now.
+ */
+.boundary-fallback {
+  display: grid;
+  gap: 14px;
+  place-items: center;
+  max-width: 34rem;
+  margin: 48px auto;
+  padding: 28px 24px;
+  border: 1px solid rgba(240, 230, 211, 0.12);
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(29, 45, 62, 0.95), rgba(26, 39, 68, 0.9));
+  text-align: center;
+}
+
+.boundary-fallback h2 {
+  margin: 0;
+  color: var(--gold-light);
+  font-size: 1.25rem;
+}
+
+.boundary-fallback p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.boundary-fallback button {
+  width: auto;
+  min-width: 12rem;
+}
