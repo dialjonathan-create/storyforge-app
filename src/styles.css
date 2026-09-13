@@ -923,30 +923,16 @@ h3 {
   margin-top: 12px;
 }
 
+/* The talk bar is a Composer now. The old rule declared THREE grid columns
+   (auto 1fr auto) for two children, so the input landed in the `auto` column and
+   sized to its own content while the Send button took the `1fr`. That is the
+   small square and the full-width button - a template with one column too many,
+   not a styling preference. */
 .story-talk {
   position: sticky;
   bottom: max(14px, env(safe-area-inset-bottom));
   z-index: 30;
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 8px;
-  align-items: center;
   margin-top: 36px;
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  background: rgba(15, 25, 35, 0.92);
-  padding: 8px;
-  backdrop-filter: blur(14px);
-}
-
-.story-talk input {
-  min-height: 48px;
-  border-radius: 999px;
-}
-
-.story-talk .gold-button {
-  width: auto;
-  min-height: 48px;
 }
 
 .reshape-popover {
@@ -1356,8 +1342,97 @@ h3 {
   border: 1px solid rgba(44, 135, 172, 0.35);
 }
 .chat-busy { opacity: 0.75; font-style: italic; }
-.chat-compose { display: flex; gap: 8px; }
-.chat-compose input { flex: 1; }
+/* --- Composer ---------------------------------------------------------- */
+
+.composer {
+  display: flex;
+  align-items: flex-end;   /* the send button stays beside the LAST line */
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: rgba(15, 25, 35, 0.92);
+  padding: 6px 6px 6px 14px;
+  backdrop-filter: blur(14px);
+}
+
+.composer-field {
+  flex: 1 1 auto;
+  min-width: 0;            /* without this a long unbroken word makes the flex
+                              item wider than the row and pushes the button out */
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 22px;
+  padding: 11px 0;
+  max-height: calc(5 * 22px + 22px);
+  overflow-y: hidden;      /* the grow effect switches this on at the cap */
+}
+
+.composer-field::placeholder { color: rgba(240, 230, 211, 0.42); }
+
+/* A circle at the end of the field, not a pill under it. 44px is the smallest
+   target iOS will reliably hit with a thumb. */
+.composer-send {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--gold-light), var(--gold));
+  color: #101827;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.composer-send:active { transform: scale(0.94); }
+
+.composer-spinner {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: 2px solid rgba(240, 230, 211, 0.18);
+  border-top-color: var(--gold);
+  animation: composer-spin 0.8s linear infinite;
+}
+
+@keyframes composer-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-spinner { animation-duration: 2.4s; }
+}
+
+/* --- The chat sheet scrolls its transcript, never itself ---------------- */
+
+.sheet-panel.chat-sheet {
+  display: flex;
+  flex-direction: column;
+  /* dvh, not vh: the dynamic viewport shrinks when the keyboard opens and vh
+     does not. With vh the compose row sat underneath the keyboard. */
+  max-height: 85dvh;
+  overflow: hidden;
+  /* Set by the visual-viewport listener on iOS, where the layout viewport does
+     not move for the keyboard even though dvh does. 0 everywhere else. */
+  padding-bottom: calc(22px + env(safe-area-inset-bottom) + var(--keyboard-inset, 0px));
+}
+
+.sheet-panel.chat-sheet .chat-scroll {
+  flex: 1 1 auto;
+  min-height: 0;           /* a flex child defaults to min-content and refuses to
+                              shrink; without this the transcript grows and
+                              pushes the composer out, which was the bug */
+  max-height: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sheet-panel.chat-sheet .composer { flex: 0 0 auto; }
 
 /* Genre and audience are free text with suggestions, never a select. The chips
    fill the field; anything can be typed over them. See GENRE_SUGGESTIONS in
