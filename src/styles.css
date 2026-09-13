@@ -2061,3 +2061,98 @@ h3 {
   color: var(--text-secondary);
   font-size: 0.82rem;
 }
+
+/* ---------------------------------------------------------------------------
+   The story map.
+
+   Sized in the flow of the Lore page rather than full-bleed: it is one more
+   thing in the list, not a destination. `touch-action: pan-y` lets a finger
+   scroll the page THROUGH the map -- a map that traps the scroll in the middle
+   of a lore page is how a seven-year-old gets stuck.
+--------------------------------------------------------------------------- */
+.story-map-figure {
+  margin: 0 0 18px;
+}
+
+.story-map {
+  width: 100%;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #0b1a24;
+  border: 1px solid rgba(212, 175, 106, 0.25);
+  touch-action: pan-y;
+}
+
+.story-map-note {
+  margin: 8px 2px 0;
+  color: var(--text-secondary, #9fb0bd);
+  font-size: 0.85rem;
+}
+
+.story-map-pin,
+.story-map-index {
+  /* A numbered pin, because the names live underneath where they cannot be
+     clipped by the edge of the map or printed on top of each other. */
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--gold-light, #e3c893);
+  color: #10202b;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  box-shadow: 0 0 0 3px rgba(11, 26, 36, 0.85);
+}
+
+.story-map-legend {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.story-map-legend li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.story-map-index {
+  flex: 0 0 auto;
+  box-shadow: none;
+}
+
+.story-map-place {
+  color: var(--text-primary, #e8eef3);
+  font-size: 0.88rem;
+}
+
+/* MapLibre's own controls ship light. On a dark map they read as a piece of a
+   different app bolted to the corner. */
+.story-map .maplibregl-ctrl-group {
+  background: rgba(11, 26, 36, 0.9);
+  border: 1px solid rgba(212, 175, 106, 0.3);
+  box-shadow: none;
+}
+
+.story-map .maplibregl-ctrl-group button + button {
+  border-top-color: rgba(212, 175, 106, 0.25);
+}
+
+.story-map .maplibregl-ctrl-group button span {
+  filter: invert(1) sepia(1) saturate(0.4) hue-rotate(5deg) brightness(1.4);
+}
+
+.story-map .maplibregl-ctrl-attrib {
+  background: rgba(11, 26, 36, 0.82);
+  color: var(--text-secondary, #9fb0bd);
+}
+
+.story-map .maplibregl-ctrl-attrib a {
+  color: var(--gold-light, #e3c893);
+}
+
