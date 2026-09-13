@@ -1920,3 +1920,93 @@ h3 {
   min-width: 0;
   padding: 0 16px;
 }
+
+
+/* --- Narration bar ------------------------------------------------------
+ *
+ * 2026-09-13: this was `background: "#f0f0f0"` in an inline style with no
+ * stylesheet rules at all -- the only element in the reading view outside the
+ * app's palette, and the reason the page looked unfinished. Every colour below
+ * is a token; the test asserts there is no literal hex in this block.
+ *
+ * It is the CURRENT player restyled. The rebuilt one -- whole-chapter render,
+ * scrubber, MediaSession -- is a separate track that has not started.
+ */
+
+.narration-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 1.6em;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.narration-play,
+.narration-stop {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--gold-light), var(--gold));
+  color: var(--bg-base);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.narration-stop {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text-secondary);
+}
+
+.narration-meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.narration-title {
+  font-family: Cinzel, Georgia, serif;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.narration-position {
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+/* Not a spinner in a white box. */
+.narration-working {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--gold-light), transparent);
+  background-size: 200% 100%;
+  animation: narrationWorking 1.6s linear infinite;
+}
+
+@keyframes narrationWorking {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+.narration-error {
+  flex: 1 1 100%;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
