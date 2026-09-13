@@ -583,6 +583,14 @@ function UniverseDetail() {
               <div className="hero-icon">{universe.coverIcon || "✦"}</div>
               <h1>{universe.title}</h1>
               <p>{universe.tagline}</p>
+              {/* The way into the universe itself. Every capability behind it
+                  already shipped; there was simply no screen. Hidden for the
+                  younger tiers, who have no business rewriting the world. */}
+              {tierForReaders(activeReaders) > 2 && (
+                <button className="inline-button" type="button" onClick={() => nav(`/universes/${id}/edit`)}>
+                  Edit this universe
+                </button>
+              )}
             </div>
             <div className="tabs">
               <button className={tab === "stories" ? "active" : ""} onClick={() => setTab("stories")}>Stories</button>
@@ -2805,6 +2813,488 @@ function inferTitle(text) {
   return words.length ? words.map((w) => w[0].toUpperCase() + w.slice(1)).join(" ") : "Untitled Story";
 }
 
+/* --- The universe editor ------------------------------------------------
+ *
+ * Every capability below already shipped. The PWA could create a universe and
+ * then never touch it again: no way to fix a title, a genre, a bible field, or
+ * a lore entry stamped with the wrong chapter. The editing all happened in a
+ * chat window by typing capability names, which is not something anybody does
+ * with a thumb.
+ *
+ * Two rules run through the whole screen:
+ *
+ *   1. **Nothing reports success until it has been read back.** Every save
+ *      re-reads `storyforge.universe.get.v1` and compares. A green tick that
+ *      means "the request did not throw" is worse than no tick, because it
+ *      stops you checking.
+ *   2. **Shape is never coerced.** A bible field that is prose stays prose and
+ *      a field that is a list stays a list. These are written by two different
+ *      paths, so the same key is a string on one universe and an array on
+ *      another — `the-embodied-age` has both in one document.
+ */
+
+export const BIBLE_FIELDS = [
+  ["worldRules", "World rules"],
+  ["lore", "Lore"],
+  ["locations", "Locations"],
+  ["openMysteries", "Open mysteries"],
+  ["factions", "Factions"],
+  ["arcDirection", "Where the arc is going"],
+  ["establishedFacts", "Established facts"],
+  ["worldState", "Where things stand"],
+];
+
+export const LORE_COLLECTIONS = [
+  ["characters", "Characters", "name"],
+  ["worldFacts", "World facts", "fact"],
+  ["timeline", "Timeline", "event"],
+  ["choiceHistory", "Choices made", "choiceText"],
+];
+
+/** "list" or "prose", from what the value actually is. Absent means prose:
+ *  new writing is prose, and guessing "list" would turn a paragraph into a
+ *  one-item array the next reader has to undo. */
+export function bibleFieldShape(value) {
+  if (Array.isArray(value)) return "list";
+  return "prose";
+}
+
+/** What the editor should show for a value, without ever coercing it. */
+export function bibleFieldDraft(value) {
+  if (Array.isArray(value)) return value.map((item) => loreText(item));
+  return typeof value === "string" ? value : "";
+}
+
+/**
+ * Did the save actually take? Compares what was sent with what came back.
+ *
+ * Deliberately tolerant about whitespace only — the server trims — and strict
+ * about everything else. A "saved" that did not save is the failure this whole
+ * screen is built to avoid.
+ */
+export function savedValueMatches(sent, got) {
+  if (Array.isArray(sent)) {
+    if (!Array.isArray(got) || got.length !== sent.length) return false;
+    return sent.every((item, i) => String(loreText(item)).trim() === String(loreText(got[i])).trim());
+  }
+  return String(got ?? "").trim() === String(sent ?? "").trim();
+}
+
+function SaveStatus({ state }) {
+  if (!state) return null;
+  if (state.busy) return <span className="save-status" role="status">Saving…</span>;
+  if (state.error) return <span className="save-status save-error" role="alert">{state.error}</span>;
+  if (state.message) return <span className="save-status save-ok" role="status">{state.message}</span>;
+  return null;
+}
+
+function UniverseEditor() {
+  const { id } = useParams();
+  const nav = useNavigate();
+  const { activeReaders } = useApp();
+  const [data, setData] = useState(null);
+  const [loadError, setLoadError] = useState("");
+  const [status, setStatus] = useState({});
+  const tier = tierForReaders(activeReaders);
+
+  const reload = React.useCallback(
+    () => execute("storyforge.universe.get.v1", { tenantId: "core", userId: "jonathan", universeId: id }),
+    [id]
+  );
+
+  useEffect(() => {
+    // The gate below is a render guard; without this the effect still fires and
+    // a child's device fetches a universe it is not allowed to see.
+    if (tier <= 2) return;
+    reload().then(setData).catch((error) => setLoadError(error.message || "Could not open this universe."));
+  }, [reload, tier]);
+
+  function mark(key, state) {
+    setStatus((current) => ({ ...current, [key]: state }));
+  }
+
+  /**
+   * Run one write, then read the universe back and check it landed.
+   * `verify(fresh)` returns true when the change is visible in the fresh read.
+   */
+  async function saveAndVerify(key, command, args, verify, okMessage) {
+    mark(key, { busy: true });
+    try {
+      const result = await execute(command, { tenantId: "core", userId: "jonathan", universeId: id, ...args });
+      const fresh = await reload();
+      setData(fresh);
+      if (!verify(fresh)) {
+        // The request succeeded and the value did not change. Saying "saved"
+        // here is the lie this screen exists to not tell.
+        mark(key, { error: "The server accepted that but still shows the old value. Nothing was lost — try again." });
+        return false;
+      }
+      mark(key, { message: okMessage || "Saved" });
+      return result;
+    } catch (error) {
+      mark(key, { error: error.message || "That did not save." });
+      return false;
+    }
+  }
+
+  if (tier <= 2) {
+    return (
+      <Page>
+        <AppHeader title="Universe" backTo={`/universes/${id}`} />
+        <section className="content">
+          <div className="boundary-fallback">
+            <h2>This part is for grown-ups</h2>
+            <p>Ask a grown-up if you want to change how this world works.</p>
+            <button className="outline-button" type="button" onClick={() => nav(`/universes/${id}`)}>Back</button>
+          </div>
+        </section>
+      </Page>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <Page>
+        <AppHeader title="Universe" backTo={`/universes/${id}`} />
+        <section className="content"><div className="inline-error">{loadError}</div></section>
+      </Page>
+    );
+  }
+  if (!data) return <ReadingLoading text="Opening the universe..." />;
+
+  return (
+    <Page>
+      <AppHeader title={data.universe?.title || "Universe"} backTo={`/universes/${id}`} />
+      <section className="content universe-editor">
+        <ErrorBoundary name="the details" resetKey={id}>
+          <UniverseDetailsEditor universe={data.universe || {}} status={status} save={saveAndVerify} />
+        </ErrorBoundary>
+        <ErrorBoundary name="the world bible" resetKey={id}>
+          <BibleEditor bible={data.bible || {}} status={status} save={saveAndVerify} />
+        </ErrorBoundary>
+        <ErrorBoundary name="the lore entries" resetKey={id}>
+          <LoreEntryEditor lore={data.lore || {}} status={status} save={saveAndVerify} />
+        </ErrorBoundary>
+      </section>
+    </Page>
+  );
+}
+
+function UniverseDetailsEditor({ universe, status, save }) {
+  const [title, setTitle] = useState(universe.title || "");
+  const [tagline, setTagline] = useState(universe.tagline || "");
+  const [genre, setGenre] = useState(universe.genre || "");
+  const [audience, setAudience] = useState(universe.audienceAge || "");
+  const state = status.details;
+
+  // Only what changed. An unchanged key is not sent, because the capability
+  // leaves absent keys alone and sending everything makes every save look like
+  // an edit to every field.
+  const patch = {};
+  if (title.trim() && title.trim() !== (universe.title || "")) patch.title = title.trim();
+  if (tagline.trim() && tagline.trim() !== (universe.tagline || "")) patch.tagline = tagline.trim();
+  if (genre.trim() && genre.trim() !== (universe.genre || "")) patch.genre = genre.trim();
+  if (audience.trim() && audience.trim() !== (universe.audienceAge || "")) patch.audienceAge = audience.trim();
+  const dirty = Object.keys(patch).length > 0;
+
+  return (
+    <section className="editor-block">
+      <h2>Details</h2>
+      <div className="suggest-field">
+        <label htmlFor="field-universeTitle">Title</label>
+        <input id="field-universeTitle" value={title} onChange={(e) => setTitle(e.target.value)} />
+      </div>
+      <div className="suggest-field">
+        <label htmlFor="field-universeTagline">Tagline</label>
+        <textarea id="field-universeTagline" className="editor-textarea" rows={2} value={tagline} onChange={(e) => setTagline(e.target.value)} />
+      </div>
+      <SuggestField
+        label="Genre"
+        name="universeGenre"
+        value={genre}
+        onChange={setGenre}
+        suggestions={[...recentGenres(), ...GENRE_SUGGESTIONS]}
+        placeholder="Anything — fuse them, invent one"
+      />
+      <SuggestField
+        label="Who is this for?"
+        name="universeAudience"
+        value={audience}
+        onChange={setAudience}
+        suggestions={AUDIENCE_SUGGESTIONS}
+        placeholder="child, teen, adult, anything"
+      />
+      {/* A field cannot be cleared here, only corrected — the capability
+          ignores a blank value, and pretending otherwise would show a save
+          that never happened. */}
+      <p className="editor-note">Fields can be corrected but not emptied.</p>
+      <div className="editor-actions">
+        <button
+          className="gold-button"
+          type="button"
+          disabled={!dirty || state?.busy}
+          onClick={() => save(
+            "details",
+            "storyforge.universe.update.v1",
+            patch,
+            (fresh) => Object.entries(patch).every(([key, value]) => savedValueMatches(value, fresh.universe?.[key])),
+            "Saved"
+          )}
+        >
+          {state?.busy ? "Saving…" : "Save details"}
+        </button>
+        <SaveStatus state={state} />
+      </div>
+    </section>
+  );
+}
+
+function BibleEditor({ bible, status, save }) {
+  return (
+    <section className="editor-block">
+      <h2>World bible</h2>
+      {BIBLE_FIELDS.map(([key, label]) => (
+        <BibleField key={key} field={key} label={label} value={bible[key]} state={status[`bible:${key}`]} save={save} />
+      ))}
+    </section>
+  );
+}
+
+export function BibleField({ field, label, value, state, save }) {
+  const shape = bibleFieldShape(value);
+  const [draft, setDraft] = useState(() => bibleFieldDraft(value));
+  const original = bibleFieldDraft(value);
+  const dirty = shape === "list"
+    ? JSON.stringify(draft) !== JSON.stringify(original)
+    : draft.trim() !== String(original).trim();
+
+  function commit() {
+    const next = shape === "list" ? draft.map((s) => s.trim()).filter(Boolean) : draft.trim();
+    return save(
+      `bible:${field}`,
+      "storyforge.bible.field.update.v1",
+      { field, value: next },
+      (fresh) => savedValueMatches(next, fresh.bible?.[field]),
+      "Saved"
+    );
+  }
+
+  return (
+    <div className="editor-field">
+      <div className="editor-field-head">
+        <h3>{label}</h3>
+        <span className="editor-shape">{shape === "list" ? "list" : "prose"}</span>
+      </div>
+      {shape === "list" ? (
+        <div className="editor-list">
+          {draft.map((item, i) => (
+            <div className="editor-list-row" key={i}>
+              <textarea
+                className="editor-textarea"
+                rows={2}
+                aria-label={`${label} ${i + 1}`}
+                value={item}
+                onChange={(e) => setDraft((cur) => cur.map((v, j) => (j === i ? e.target.value : v)))}
+              />
+              <button
+                className="icon-button"
+                type="button"
+                aria-label={`Remove ${label} ${i + 1}`}
+                onClick={() => setDraft((cur) => cur.filter((_, j) => j !== i))}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button className="outline-button" type="button" onClick={() => setDraft((cur) => [...cur, ""])}>
+            + Add one
+          </button>
+        </div>
+      ) : (
+        <textarea
+          className="editor-textarea"
+          rows={6}
+          aria-label={label}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+        />
+      )}
+      <div className="editor-actions">
+        <button className="outline-button" type="button" disabled={!dirty || state?.busy} onClick={commit}>
+          {state?.busy ? "Saving…" : `Save ${label.toLowerCase()}`}
+        </button>
+        <SaveStatus state={state} />
+      </div>
+    </div>
+  );
+}
+
+function LoreEntryEditor({ lore, status, save }) {
+  return (
+    <section className="editor-block">
+      <h2>Lore entries</h2>
+      {LORE_COLLECTIONS.map(([collection, label, textKey]) => (
+        <LoreCollection
+          key={collection}
+          collection={collection}
+          label={label}
+          textKey={textKey}
+          entries={Array.isArray(lore[collection]) ? lore[collection] : []}
+          status={status}
+          save={save}
+        />
+      ))}
+    </section>
+  );
+}
+
+function LoreCollection({ collection, label, textKey, entries, status, save }) {
+  const [adding, setAdding] = useState("");
+  const [chapter, setChapter] = useState("");
+  const addState = status[`lore:add:${collection}`];
+
+  function add() {
+    const text = adding.trim();
+    if (!text) return;
+    const entry = collection === "worldFacts"
+      ? text
+      : { [textKey]: text, ...(chapter.trim() ? { chapterNumber: Number(chapter.trim()) } : {}) };
+    return save(
+      `lore:add:${collection}`,
+      "storyforge.lore.update.v1",
+      { lore: { [collection]: [entry] } },
+      (fresh) => (fresh.lore?.[collection] || []).some((item) => loreText(item).trim() === text),
+      "Added"
+    ).then((ok) => {
+      if (ok) {
+        setAdding("");
+        setChapter("");
+      }
+      return ok;
+    });
+  }
+
+  return (
+    <div className="editor-field">
+      <div className="editor-field-head">
+        <h3>{label}</h3>
+        <span className="editor-shape">{entries.length}</span>
+      </div>
+      {entries.map((entry, index) => (
+        <LoreEntryRow
+          key={`${collection}-${index}-${loreText(entry).slice(0, 24)}`}
+          collection={collection}
+          entry={entry}
+          index={index}
+          status={status}
+          save={save}
+        />
+      ))}
+      <textarea
+        className="editor-textarea"
+        rows={2}
+        aria-label={`New ${label.toLowerCase()} entry`}
+        placeholder={`Add to ${label.toLowerCase()}...`}
+        value={adding}
+        onChange={(e) => setAdding(e.target.value)}
+      />
+      {collection !== "worldFacts" && (
+        <input
+          className="editor-chapter"
+          inputMode="numeric"
+          aria-label={`Chapter for the new ${label.toLowerCase()} entry`}
+          placeholder="Chapter (optional)"
+          value={chapter}
+          onChange={(e) => setChapter(e.target.value.replace(/[^0-9]/g, ""))}
+        />
+      )}
+      <div className="editor-actions">
+        <button className="outline-button" type="button" disabled={!adding.trim() || addState?.busy} onClick={add}>
+          {addState?.busy ? "Adding…" : "Add"}
+        </button>
+        <SaveStatus state={addState} />
+        <SaveStatus state={status[`lore:remove:${collection}`]} />
+      </div>
+    </div>
+  );
+}
+
+export function LoreEntryRow({ collection, entry, index, status, save }) {
+  const [confirming, setConfirming] = useState(false);
+  const [chapter, setChapter] = useState("");
+  const key = `lore:${collection}:${index}`;
+  // A successful removal unmounts this row, taking any status rendered inside
+  // it with it — so "Removed" is reported by the collection, which survives.
+  const removeKey = `lore:remove:${collection}`;
+  const state = status[key];
+  const text = loreText(entry);
+  const isDict = entry && typeof entry === "object";
+  const currentChapter = isDict ? entry.chapterNumber : undefined;
+
+  return (
+    <div className="lore-entry-row">
+      <p className="lore-entry-text">{text}</p>
+      <div className="lore-entry-meta">
+        {currentChapter != null && <span className="editor-shape">chapter {currentChapter}</span>}
+        {/* Re-attribution only: a bare string carries no chapterNumber and the
+            capability refuses rather than inventing a wrapper around it. */}
+        {isDict && (
+          <>
+            <input
+              className="editor-chapter"
+              inputMode="numeric"
+              aria-label={`Move ${collection} entry ${index + 1} to chapter`}
+              placeholder="Chapter"
+              value={chapter}
+              onChange={(e) => setChapter(e.target.value.replace(/[^0-9]/g, ""))}
+            />
+            <button
+              className="outline-button"
+              type="button"
+              /* Index 0 exists in every collection, so an unqualified label
+                 names four different buttons on one screen. */
+              aria-label={`Move ${collection} entry ${index + 1}`}
+              disabled={!chapter.trim() || state?.busy}
+              onClick={() => save(
+                key,
+                "storyforge.lore.entry.reattribute.v1",
+                { collection, entryIndex: index, chapterNumber: Number(chapter) },
+                (fresh) => String((fresh.lore?.[collection] || [])[index]?.chapterNumber) === chapter.trim(),
+                `Moved to chapter ${chapter}`
+              )}
+            >
+              Move
+            </button>
+          </>
+        )}
+        {confirming ? (
+          <>
+            <button
+              className="danger-button"
+              type="button"
+              aria-label={`Really remove ${collection} entry ${index + 1}`}
+              disabled={state?.busy}
+              onClick={() => save(
+                removeKey,
+                "storyforge.lore.entry.remove.v1",
+                { collection, entryIndex: index },
+                (fresh) => !(fresh.lore?.[collection] || []).some((item) => loreText(item) === text),
+                "Removed"
+              )}
+            >
+              Really remove
+            </button>
+            <button className="inline-button" type="button" onClick={() => setConfirming(false)}>Keep</button>
+          </>
+        ) : (
+          <button className="inline-button" type="button" aria-label={`Remove ${collection} entry ${index + 1}`} onClick={() => setConfirming(true)}>Remove</button>
+        )}
+      </div>
+      <SaveStatus state={state} />
+    </div>
+  );
+}
+
 function Root() {
   return (
     <BrowserRouter>
@@ -2817,6 +3307,7 @@ function Root() {
             <Route path="/universes" element={<UniverseList />} />
             <Route path="/universes/new" element={<NewUniverse />} />
             <Route path="/universes/:id" element={<UniverseDetail />} />
+            <Route path="/universes/:id/edit" element={<UniverseEditor />} />
             <Route path="/universes/:id/new-story" element={<NewStory />} />
             <Route path="/universes/:id/stories/:storyId" element={<ChapterReader />} />
             <Route path="*" element={<Navigate to="/" replace />} />
@@ -2861,7 +3352,7 @@ function RoutedBoundary({ children }) {
 // Exported for tests. The young-reader flow had no automated coverage at all,
 // which is how a dead end in the path a child uses survived unnoticed; a flow
 // that a seven-year-old walks should not be the least-tested screen in the app.
-export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard, ErrorBoundary, Lore };
+export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard, ErrorBoundary, Lore, UniverseEditor };
 
 createRoot(document.getElementById("root")).render(<Root />);
 
