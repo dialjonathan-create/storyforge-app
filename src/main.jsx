@@ -1023,14 +1023,6 @@ function ChapterReader() {
     }).catch((error) => setWaiting({ kind: "reshape", chapterNumber, startedAt: Date.now(), failed: true, error: error.message || "Could not reshape the story." }));
   }
 
-  async function submitTalk(event) {
-    event.preventDefault();
-    const text = talkText.trim();
-    if (!text) return;
-    setTalkText("");
-    await sendChatMessage(text);
-  }
-
   // One chat entry. storyforge.converse.v1 carries the world bible, canon,
   // character history and the persisted conversation thread, and it routes
   // server-side: plain discussion stays a conversation; a chapter, edit,
@@ -1117,7 +1109,7 @@ function ChapterReader() {
         {proseReady && <Prose chapter={chapter} tier={tier} entities={entities} onLongPress={setReshapePromptPoint} onEntityTap={setInteractTarget} onWordTap={tier !== 1 ? setDefineWord : undefined} pulseFrom={reshapedPulse ? reshapeAnchor?.index : null} />}
         {choiceRevealPending && <div className="choice-sweep" />}
         <ChoicePanel visible={choicesVisible} chapter={chapter} readers={activeReaders} onChoose={choose} showTooltip={showChoiceTooltip} onDismissTooltip={() => setShowChoiceTooltip(false)} />
-        {tier !== 1 && <TalkBar value={talkText} setValue={setTalkText} onSubmit={submitTalk} />}
+        {tier !== 1 && <TalkBar value={talkText} setValue={setTalkText} onSend={sendChatMessage} busy={chatBusy} />}
       </motion.article>
       <ChapterMenu open={menuOpen} onClose={() => setMenuOpen(false)} total={storyChapterLimit(story, chapter.chapterNumber)} current={chapterNumber} onJump={(n) => { setMenuOpen(false); setChapterNumber(n); window.scrollTo(0, 0); }} />
       <ReshapeConfirm point={reshapePromptPoint} onCancel={() => setReshapePromptPoint(null)} onConfirm={() => { setReshapePoint(reshapePromptPoint); setReshapePromptPoint(null); }} />
@@ -1344,12 +1336,142 @@ function choicePrompt(readers) {
   return "What happens next?";
 }
 
-function TalkBar({ value, setValue, onSubmit }) {
+/** Publish the keyboard's height as `--keyboard-inset` while a sheet is open.
+ *
+ * iOS Safari does not move the LAYOUT viewport for the keyboard, so a
+ * `position: fixed` sheet stays exactly where it was and the keyboard covers
+ * it. `visualViewport` is the only API that reports the actually-visible area.
+ * Everywhere else this measures 0 and the `dvh` unit alone is enough.
+ */
+function useKeyboardInset(active) {
+  useEffect(() => {
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    if (!active || !vv) return undefined;
+    const apply = () => {
+      const inset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      document.documentElement.style.setProperty("--keyboard-inset", `${Math.round(inset)}px`);
+    };
+    apply();
+    vv.addEventListener("resize", apply);
+    vv.addEventListener("scroll", apply);
+    return () => {
+      vv.removeEventListener("resize", apply);
+      vv.removeEventListener("scroll", apply);
+      document.documentElement.style.removeProperty("--keyboard-inset");
+    };
+  }, [active]);
+}
+
+const COMPOSER_MAX_ROWS = 5;
+
+/** How many rows the field should show for this text, before soft-wrap.
+ *
+ * Deliberately computed from the text rather than from `scrollHeight`: jsdom
+ * reports `scrollHeight` as 0, so a measurement-based grow cannot be asserted in
+ * the suite at all. This is the exact half — newlines — and the effect below
+ * handles the half that needs a real layout engine.
+ */
+function composerRows(value, max = COMPOSER_MAX_ROWS) {
+  const lines = String(value ?? "").split("\n").length;
+  return Math.max(1, Math.min(lines, max));
+}
+
+/** The one compose row, used by the chat sheet and by the reader's talk bar.
+ *
+ * WHAT IT REPLACES. Both call sites were a single-line `<input>` beside a
+ * `gold-button`. `.gold-button` is `width: 100%`, and `.story-talk` declared
+ * three grid columns (`auto 1fr auto`) for two children — so the field landed in
+ * the `auto` column and sized to its content while the button took the `1fr`.
+ * That is the small square and the full-width Send: not a styling opinion, a
+ * template with one column too many.
+ */
+function Composer({
+  value,
+  onChange,
+  onSubmit,
+  busy = false,
+  placeholder = "",
+  autoFocus = false,
+  label = "Message",
+  className = "",
+}) {
+  const ref = useRef(null);
+  const text = String(value ?? "");
+  const hasText = Boolean(text.trim());
+
+  // Soft-wrap growth. A long unbroken sentence has to grow too, and only a real
+  // layout engine knows where it wraps. No-op under jsdom, so the suite asserts
+  // `rows` and this is a device check.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof window === "undefined" || !el.scrollHeight) return;
+    el.style.height = "auto";
+    const styles = window.getComputedStyle(el);
+    const lineHeight = parseFloat(styles.lineHeight) || 22;
+    const chrome = el.offsetHeight - el.clientHeight;
+    const cap = COMPOSER_MAX_ROWS * lineHeight + chrome;
+    el.style.height = `${Math.min(el.scrollHeight, cap)}px`;
+    el.style.overflowY = el.scrollHeight > cap ? "auto" : "hidden";
+  }, [text]);
+
+  function send() {
+    if (!hasText || busy) return;
+    onSubmit(text.trim());
+  }
+
   return (
-    <form className="story-talk" onSubmit={onSubmit}>
-      <input value={value} onChange={(event) => setValue(event.target.value)} placeholder="Talk to the story..." />
-      <button type="submit" className="gold-button">Send</button>
+    <form
+      className={`composer${className ? ` ${className}` : ""}`}
+      onSubmit={(event) => {
+        event.preventDefault();
+        send();
+      }}
+    >
+      <textarea
+        ref={ref}
+        className="composer-field"
+        rows={composerRows(text)}
+        value={text}
+        placeholder={placeholder}
+        aria-label={label}
+        autoFocus={autoFocus}
+        // iOS labels the return key "Send" rather than "return". The keyboard
+        // is the only affordance a thumb sees, so it should say what it does.
+        enterKeyHint="send"
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" || event.shiftKey) return;
+          // Mid-IME Enter commits a candidate; intercepting it eats the word.
+          if (event.nativeEvent?.isComposing) return;
+          event.preventDefault();
+          send();
+        }}
+      />
+      {busy ? (
+        <span className="composer-spinner" role="status" aria-label="Sending" />
+      ) : hasText ? (
+        <button type="submit" className="composer-send" aria-label="Send">
+          <span aria-hidden="true">↑</span>
+        </button>
+      ) : null}
     </form>
+  );
+}
+
+function TalkBar({ value, setValue, onSend, busy = false }) {
+  return (
+    <Composer
+      className="story-talk"
+      value={value}
+      onChange={setValue}
+      onSubmit={(text) => {
+        setValue("");
+        onSend(text);
+      }}
+      busy={busy}
+      placeholder="Talk to the story..."
+      label="Talk to the story"
+    />
   );
 }
 
@@ -1359,12 +1481,16 @@ function StoryChatSheet({ thread, busy, onSend, onClose }) {
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [thread, busy]);
+  useKeyboardInset(Boolean(thread));
   if (!thread) return null;
   return (
     <motion.div className="bottom-sheet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <button className="sheet-shade" onClick={onClose} />
-      <motion.section className="sheet-panel interaction-panel" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}>
+      <motion.section className="sheet-panel chat-sheet" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}>
         <h2>Talk to the story</h2>
+        {/* The transcript is the only thing that scrolls. The panel used to
+            scroll as a whole, so a forty-line reply pushed the compose row off
+            the bottom and there was nothing to type into. */}
         <div className="chat-scroll" ref={scrollRef}>
           {thread.map((message, index) => (
             <div key={index} className={message.role === "user" ? "chat-line chat-user" : "chat-line chat-story"}>
@@ -1373,19 +1499,17 @@ function StoryChatSheet({ thread, busy, onSend, onClose }) {
           ))}
           {busy && <div className="chat-line chat-story chat-busy">The story is thinking…</div>}
         </div>
-        <form
-          className="chat-compose"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const q = text.trim();
-            if (!q || busy) return;
+        <Composer
+          value={text}
+          onChange={setText}
+          onSubmit={(q) => {
             setText("");
             onSend(q);
           }}
-        >
-          <input value={text} onChange={(event) => setText(event.target.value)} placeholder="Say more..." />
-          <button type="submit" className="gold-button" disabled={busy}>Send</button>
-        </form>
+          busy={busy}
+          placeholder="Say more..."
+          label="Say more"
+        />
       </motion.section>
     </motion.div>
   );
@@ -1969,7 +2093,7 @@ function Root() {
 // Exported for tests. The young-reader flow had no automated coverage at all,
 // which is how a dead end in the path a child uses survived unnoticed; a flow
 // that a seven-year-old walks should not be the least-tested screen in the app.
-export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier };
+export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet };
 
 createRoot(document.getElementById("root")).render(<Root />);
 
