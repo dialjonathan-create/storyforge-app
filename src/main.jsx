@@ -1299,6 +1299,108 @@ function renderEntityText(text, entities, onEntityTap) {
   return out;
 }
 
+/** The smallest markdown that makes the editor's replies readable.
+ *
+ * The editor answers in markdown — `###` headers, `**bold**`, bullets — and the
+ * chat line printed `message.content` verbatim, so a seven-year-old and a
+ * grown-up both saw `### Chapter 2` and a wall of asterisks.
+ *
+ * Hand-rolled on purpose. This bundle loads on a school iPad over school wifi;
+ * `react-markdown` plus `remark` is roughly 40 kB gzipped for six constructs.
+ * It also means NO `dangerouslySetInnerHTML` anywhere: every node below is a
+ * real React element, so a reply containing `<script>` renders as the text
+ * `<script>` and cannot do anything. A markdown-to-HTML library would have made
+ * that a question to think about; this way it is not one.
+ *
+ * Supported, deliberately: headings, bold, italic, inline code, bullet and
+ * numbered lists, blockquotes, paragraphs. Not supported: tables, links, images,
+ * raw HTML. The editor does not emit them, and each one is more surface.
+ */
+const MD_INLINE = /(\*\*[^*]+\*\*|__[^_]+__|\*[^*\n]+\*|_[^_\n]+_|`[^`\n]+`)/g;
+
+function renderInline(text, keyPrefix = "i") {
+  const parts = String(text ?? "").split(MD_INLINE).filter((part) => part !== "");
+  return parts.map((part, index) => {
+    const key = `${keyPrefix}-${index}`;
+    if (/^\*\*[^*]+\*\*$/.test(part) || /^__[^_]+__$/.test(part)) {
+      return <strong key={key}>{part.slice(2, -2)}</strong>;
+    }
+    if (/^\*[^*\n]+\*$/.test(part) || /^_[^_\n]+_$/.test(part)) {
+      return <em key={key}>{part.slice(1, -1)}</em>;
+    }
+    if (/^`[^`\n]+`$/.test(part)) {
+      return <code key={key}>{part.slice(1, -1)}</code>;
+    }
+    return <React.Fragment key={key}>{part}</React.Fragment>;
+  });
+}
+
+/** Block-level parse. Returns React nodes, never HTML. */
+function renderMarkdown(source) {
+  const lines = String(source ?? "").split("\n");
+  const blocks = [];
+  let paragraph = [];
+  let list = null;   // { ordered, items: [] }
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    const text = paragraph.join(" ");
+    blocks.push(<p key={`p${blocks.length}`}>{renderInline(text, `p${blocks.length}`)}</p>);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list) return;
+    const Tag = list.ordered ? "ol" : "ul";
+    blocks.push(
+      <Tag key={`l${blocks.length}`}>
+        {list.items.map((item, index) => (
+          <li key={index}>{renderInline(item, `l${blocks.length}-${index}`)}</li>
+        ))}
+      </Tag>
+    );
+    list = null;
+  };
+  const flush = () => { flushParagraph(); flushList(); };
+
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim()) { flush(); continue; }
+
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      flush();
+      // Clamped to h3..h4: the sheet already has an h2, and a reply must not
+      // outrank the panel it is inside.
+      const level = Math.min(6, Math.max(3, heading[1].length + 2));
+      const Tag = `h${level}`;
+      blocks.push(<Tag key={`h${blocks.length}`}>{renderInline(heading[2], `h${blocks.length}`)}</Tag>);
+      continue;
+    }
+
+    const quote = /^>\s?(.*)$/.exec(line);
+    if (quote) {
+      flush();
+      blocks.push(<blockquote key={`q${blocks.length}`}>{renderInline(quote[1], `q${blocks.length}`)}</blockquote>);
+      continue;
+    }
+
+    const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
+    const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    if (bullet || numbered) {
+      flushParagraph();
+      const ordered = Boolean(numbered);
+      if (!list || list.ordered !== ordered) { flushList(); list = { ordered, items: [] }; }
+      list.items.push((bullet || numbered)[1]);
+      continue;
+    }
+
+    flushList();
+    paragraph.push(line.trim());
+  }
+  flush();
+  return blocks;
+}
+
 function ChoicePanel({ visible, chapter, readers, onChoose, showTooltip, onDismissTooltip }) {
   if (!chapter?.choices?.length || chapter.choiceMade) return null;
   return (
@@ -1494,7 +1596,15 @@ function StoryChatSheet({ thread, busy, onSend, onClose }) {
         <div className="chat-scroll" ref={scrollRef}>
           {thread.map((message, index) => (
             <div key={index} className={message.role === "user" ? "chat-line chat-user" : "chat-line chat-story"}>
-              {message.kind === "chapter" || message.kind === "edit" || message.kind === "chapter_edit" ? <em>{message.content}</em> : message.content}
+              {/* The person's own turn stays exactly as they typed it: they know
+                  what they wrote, and reinterpreting their asterisks would be
+                  surprising. Chapter and edit kinds keep their <em>. Only the
+                  editor's prose is markdown. */}
+              {message.role === "user"
+                ? message.content
+                : message.kind === "chapter" || message.kind === "edit" || message.kind === "chapter_edit"
+                  ? <em>{message.content}</em>
+                  : <div className="chat-markdown">{renderMarkdown(message.content)}</div>}
             </div>
           ))}
           {busy && <div className="chat-line chat-story chat-busy">The story is thinking…</div>}
@@ -2093,7 +2203,7 @@ function Root() {
 // Exported for tests. The young-reader flow had no automated coverage at all,
 // which is how a dead end in the path a child uses survived unnoticed; a flow
 // that a seven-year-old walks should not be the least-tested screen in the app.
-export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet };
+export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown };
 
 createRoot(document.getElementById("root")).render(<Root />);
 
