@@ -759,7 +759,39 @@ h3 {
   margin: 0 0 1.2em;
   transform: translateZ(0);
   backface-visibility: hidden;
+  /* A word that cannot fit breaks rather than widening the page. Found by the
+     width check on 2026-09-14: a URL in prose rendered a 663px line inside a
+     320px phone, so the whole document scrolled sideways and the column looked
+     like a third of the screen. That is also the shape the corrupted reader
+     took, which is why this is a property of the paragraph and not a patch to
+     one renderer. */
+  overflow-wrap: anywhere;
 }
+
+/* A scene break. The prose writes it as `***` or `— ◈ —`, and before this the
+   reader printed those three asterisks as a paragraph of their own. */
+.scene-break {
+  width: 100%;
+  height: auto;
+  margin: 2.2em auto;
+  border: 0;
+  color: var(--gold-dim);
+  text-align: center;
+  overflow: visible;
+}
+
+.scene-break::before {
+  content: "◈";
+  display: block;
+  color: var(--gold-light);
+  font-size: 0.85em;
+  letter-spacing: 0.4em;
+  opacity: 0.75;
+}
+
+/* A paragraph after a scene break is not the first paragraph, so it must not
+   get the drop cap -- which the :first-child selector already handles, and
+   this comment exists so the next person does not "fix" it to :first-of-type. */
 
 .prose p.paragraph-pulse {
   animation: paragraphPulse 1.4s ease both;
