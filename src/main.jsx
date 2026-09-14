@@ -1380,13 +1380,34 @@ function ChapterReader() {
       setChatThread((current) => [...(current || []), { role: "assistant", content: successText(res), kind: "note" }]);
       if (command === AbilityCommandDraftApprove) setChatSavedChapter(true);
     } catch (error) {
+      // The server's sentence first. `chapter_landed_elsewhere` explains that
+      // the save resolved to a different chapter and the proposal is still
+      // held, which no generic message here could say.
       setChatThread((current) => [...(current || []), { role: "assistant", content: error.message || "That did not go through. The draft is still held.", kind: "error" }]);
     }
   }
 
   function approveDraft(proposal) {
+    // The number comes from the SERVER'S REPORT of the write, and from nowhere
+    // else.
+    //
+    // This used to fall back to the draft's own chapterNumber when the server
+    // did not name one, and that fallback is the whole bug: `storyforge.chapter.save.v1` resolves its own
+    // chapter target and can land somewhere other than the draft's slot, so a
+    // reader was told "Saved as chapter 1" about a write that went elsewhere.
+    // Falling back to what we ASKED for, when the server did not say what it
+    // DID, is stating a fact we do not have.
+    //
+    // If the server does not name a chapter, the confirmation does not name one
+    // either. "Saved." is less informative and true; the alternative was
+    // informative and wrong.
+    // `Number.isFinite(Number(x))` is NOT the check: `Number(null)` and
+    // `Number("")` are both 0, so a missing chapter rendered as
+    // "Saved as chapter null." The value has to actually be a number.
     return settleProposal(proposal, AbilityCommandDraftApprove, {}, (res) =>
-      `Saved as chapter ${res.chapterNumber ?? proposal.chapterNumber}.`);
+      typeof res?.chapterNumber === "number" && Number.isFinite(res.chapterNumber)
+        ? `Saved as chapter ${res.chapterNumber}.`
+        : "Saved.");
   }
 
   function dismissDraft(proposal) {
