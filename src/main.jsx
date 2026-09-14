@@ -1556,19 +1556,189 @@ function ChapterImages({ chapter, tier, onHeroLoad }) {
   return <motion.img initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5 }} className="chapter-image hero-image" src={images[0].url} alt={images[0].sceneDescription || "Chapter illustration"} onLoad={onHeroLoad} />;
 }
 
+/* --- What a reader is allowed to see ------------------------------------
+ *
+ * Read on the device, 2026-09-13, chapter 2 of `the-embodied-age/threshold`:
+ *
+ *     record; it was an architecture. <!-- pause --> Maren Voss sat at the
+ *     Before her lay the *Codex of Internal Rhythms*, a book
+ *
+ * The `<!-- ... -->` markers are TTS direction -- the live chapter carries
+ * `pause`, `character: maren` and `dramatic`. They are **data for the audio
+ * renderer** and must stay in Firestore and in Drive exactly as written. They
+ * simply have no business on a page. The `*italics*` are markdown, which the
+ * chat sheet learned to render in #12 and the chapter reader never did.
+ *
+ * THE SECOND ATTEMPT.
+ *
+ * #22 shipped this as three passes that each re-split a string, and it made the
+ * reader unusable on any paragraph that had both markdown and a character name
+ * in it -- words run together, short words gone, spans repeating down the page.
+ * It was NOT a string-offset bug, which is what it looked like. It was
+ * duplicate React keys: `renderInteractiveText` seeded `let key = 10000` per
+ * call, #22 called it once per markdown segment, and every segment therefore
+ * produced keys 10000, 10001, ... into the same parent's children. React
+ * reconciles by key, so on the first re-render it duplicated some children and
+ * dropped others; whitespace and words under three letters were returned as
+ * bare unkeyed strings, so those were the ones that vanished.
+ *
+ * The first render was correct, which is why every test passed and why it could
+ * only be seen on a device.
+ *
+ * So this version does not build strings in layers. It resolves the paragraph
+ * ONCE into a flat list of typed tokens, and rendering is a single walk over
+ * that list with one key counter for the whole paragraph. Two properties hold
+ * by construction, and both are asserted:
+ *
+ *   1. Concatenating every token's text reproduces the cue-stripped,
+ *      markdown-stripped source character for character. Nothing can be
+ *      duplicated or dropped, because nothing is ever re-split.
+ *   2. Every rendered node has a key, including whitespace. There are no bare
+ *      string children for React to lose.
+ */
+
+// Every TTS directive the generator emits, and anything shaped like one it
+// starts emitting tomorrow. Deliberately broad: an unknown directive is still
+// not something a reader should see.
+const PROSE_DIRECTIVE = /<!--[\s\S]*?-->/g;
+
+/** A scene break, in either of the two spellings the prose uses. */
+const SCENE_BREAK = /^\s*(?:\*\*\*|---|—\s*◈\s*—|◈)\s*$/;
+
+/** Markdown emphasis, as one scan rather than a split. */
+const MD_SPAN = /(\*\*|__)(?=\S)([\s\S]*?\S)\1|(\*|_)(?=\S)([^*_\n]*?\S)\3|`([^`\n]+)`/g;
+
+/**
+ * The stored text with the audio cues taken out. Everything a person reads
+ * passes through this; nothing that writes or narrates does.
+ */
+export function stripProseDirectives(text) {
+  return String(text ?? "").replace(PROSE_DIRECTIVE, "");
+}
+
+/**
+ * What the audio renderer wants back: the cues, in order, with what they said.
+ * Exported so a test can prove the reader and the narrator are looking at the
+ * same source and disagreeing only about the cues.
+ */
+export function proseDirectives(text) {
+  return [...String(text ?? "").matchAll(PROSE_DIRECTIVE)].map((match) => {
+    const body = match[0].slice(4, -3).trim();
+    const [name, ...rest] = body.split(":");
+    return { directive: name.trim().toLowerCase(), value: rest.join(":").trim() || null, raw: match[0] };
+  });
+}
+
+/**
+ * One paragraph, as a flat list of `{ kind, text }`.
+ *
+ * `kind` is "plain" | "em" | "strong" | "code" | "entity" | "word". The scan
+ * only ever moves FORWARD, and each step consumes at least one character, so
+ * this cannot fail to terminate however strange the input. Joining the `text`
+ * of every token returns the input minus the markdown punctuation and nothing
+ * else -- which is the property `proseTokens` exists to make testable.
+ */
+export function proseTokens(text, entities, { words = false } = {}) {
+  const source = stripProseDirectives(text);
+  const emphasised = [];
+  let at = 0;
+  MD_SPAN.lastIndex = 0;
+  for (let match = MD_SPAN.exec(source); match; match = MD_SPAN.exec(source)) {
+    if (match.index > at) emphasised.push({ kind: "plain", text: source.slice(at, match.index) });
+    if (match[2] != null) emphasised.push({ kind: "strong", text: match[2] });
+    else if (match[4] != null) emphasised.push({ kind: "em", text: match[4] });
+    else emphasised.push({ kind: "code", text: match[5] });
+    at = match.index + match[0].length;
+    // A zero-length match would spin here forever. It cannot happen with this
+    // pattern -- every branch requires at least one non-space character -- but
+    // the guard costs nothing and the thing being guarded against is what took
+    // the reader down.
+    if (MD_SPAN.lastIndex <= match.index) MD_SPAN.lastIndex = match.index + 1;
+  }
+  if (at < source.length) emphasised.push({ kind: "plain", text: source.slice(at) });
+
+  // Entities, then words, each splitting a token's own text and never the
+  // paragraph. `code` is left alone: a character name inside backticks is a
+  // literal, not a link.
+  const withEntities = emphasised.flatMap((token) =>
+    token.kind === "code" ? [token] : splitEntities(token, entities));
+  if (!words) return withEntities;
+  return withEntities.flatMap((token) =>
+    token.kind === "entity" || token.kind === "code" ? [token] : splitWords(token));
+}
+
+function splitEntities(token, entities) {
+  const list = (entities || []).filter((entity) => String(entity?.name || "").trim().length > 0);
+  if (!list.length) return [token];
+  const out = [];
+  let rest = token.text;
+  let guard = 0;
+  while (rest && guard++ < 5000) {
+    const found = list
+      .map((entity) => {
+        const idx = findEntityIndex(rest, String(entity.name));
+        return idx >= 0 ? { entity, idx, length: String(entity.name).length } : null;
+      })
+      .filter((hit) => hit && hit.length > 0)
+      .sort((a, b) => a.idx - b.idx || b.length - a.length)[0];
+    if (!found) break;
+    if (found.idx > 0) out.push({ ...token, text: rest.slice(0, found.idx) });
+    out.push({ kind: "entity", emphasis: token.kind, entity: found.entity,
+               text: rest.slice(found.idx, found.idx + found.length) });
+    rest = rest.slice(found.idx + found.length);
+  }
+  if (rest) out.push({ ...token, text: rest });
+  return out;
+}
+
+function splitWords(token) {
+  // Words of three letters or more are tappable for a definition; everything
+  // else -- punctuation, spaces, "a", "of" -- stays as text, but as a TOKEN
+  // with a key rather than a bare string React can lose.
+  return token.text.split(/(\s+)/).filter((part) => part !== "").map((part) => {
+    const clean = part.replace(/[^a-zA-Z']/g, "");
+    return clean.length >= 3 && !/^\s+$/.test(part)
+      ? { ...token, kind: "word", word: clean.toLowerCase(), emphasis: token.kind, text: part }
+      : { ...token, text: part };
+  });
+}
+
+/**
+ * Blocks, in reading order. A paragraph or a scene break — never a paragraph
+ * whose entire content is three asterisks, which is what the reader showed.
+ */
+export function proseBlocks(text) {
+  return stripProseDirectives(text)
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => (SCENE_BREAK.test(line) ? { type: "break" } : { type: "paragraph", text: line }));
+}
+
 function Prose({ chapter, tier, entities, onLongPress, onEntityTap, onWordTap, pulseFrom }) {
-  const paragraphs = String(chapter.prose || "").split(/\n+/).filter(Boolean);
+  const blocks = proseBlocks(chapter.prose);
   const images = (chapter.images || []).filter((img) => img.url);
+  // Paragraphs keep their own numbering across scene breaks, because the
+  // bookmark and the reshape anchor both address a paragraph index and a rule
+  // is not a paragraph.
+  let paragraphIndex = -1;
   return (
     <div className={`prose ${pulseFrom != null ? "reshaped-pulse" : ""}`}>
-      {paragraphs.map((p, i) => (
-        <React.Fragment key={i}>
-          <InteractiveParagraph text={p} index={i} entities={entities} onLongPress={onLongPress} onEntityTap={onEntityTap} onWordTap={onWordTap} pulsing={pulseFrom != null && i >= pulseFrom} />
-          {tier === 1 && images[i % Math.max(1, images.length)] && i > 0 && i % 2 === 1 && (
-            <motion.img initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5 }} className="chapter-image" src={images[i % images.length].url} alt={images[i % images.length].sceneDescription || "Chapter illustration"} />
-          )}
-        </React.Fragment>
-      ))}
+      {blocks.map((block, blockIndex) => {
+        if (block.type === "break") {
+          return <hr className="scene-break" key={`b${blockIndex}`} aria-hidden="true" />;
+        }
+        paragraphIndex += 1;
+        const i = paragraphIndex;
+        return (
+          <React.Fragment key={`p${blockIndex}`}>
+            <InteractiveParagraph text={block.text} index={i} entities={entities} onLongPress={onLongPress} onEntityTap={onEntityTap} onWordTap={onWordTap} pulsing={pulseFrom != null && i >= pulseFrom} />
+            {tier === 1 && images[i % Math.max(1, images.length)] && i > 0 && i % 2 === 1 && (
+              <motion.img initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.5 }} className="chapter-image" src={images[i % images.length].url} alt={images[i % images.length].sceneDescription || "Chapter illustration"} />
+            )}
+          </React.Fragment>
+        );
+      })}
     </div>
   );
 }
@@ -1606,41 +1776,48 @@ function InteractiveParagraph({ text, index, entities, onLongPress, onEntityTap,
       onPointerCancel={endPress}
       onPointerLeave={endPress}
     >
-      {renderInteractiveText(text, entities, onEntityTap, onWordTap ? handleWordTap : null)}
+      {renderProseText(text, entities, onEntityTap, onWordTap ? handleWordTap : null)}
     </p>
   );
 }
 
-// 2026-08-27: layered on top of renderEntityText rather than replacing it --
-// entity names (characters, places) keep their existing tap-to-interact
-// behaviour untouched; this only wraps the PLAIN-text segments in between
-// with individually tappable words for the short-tap dictionary. Words under
-// 3 letters are left alone (tapping "a" or "is" for a definition is just
-// noise), and onWordTap being falsy (tier 1 / Talia) makes this a no-op that
-// falls straight back to the original entity-only rendering.
-function renderInteractiveText(text, entities, onEntityTap, onWordTap) {
-  const base = renderEntityText(text, entities, onEntityTap);
-  if (!onWordTap) return base;
-  let key = 10000;
-  return base.flatMap((piece) => {
-    if (typeof piece !== "string") return [piece];
-    return piece.split(/(\s+)/).map((token) => {
-      const clean = token.replace(/[^a-zA-Z']/g, "");
-      if (!clean || clean.length < 3 || /^\s+$/.test(token)) return token;
+/**
+ * One paragraph of chapter prose, rendered in a single walk.
+ *
+ * ONE key counter for the whole paragraph, and EVERY node carries a key —
+ * whitespace included. #22's corruption was three separate key sequences
+ * flattened into one parent plus bare unkeyed strings between them; there is
+ * nothing here for React to duplicate or drop.
+ */
+function renderProseText(text, entities, onEntityTap, onWordTap) {
+  const tokens = proseTokens(text, entities, { words: Boolean(onWordTap) });
+  return tokens.map((token, index) => {
+    const key = `t${index}`;
+    if (token.kind === "entity") {
       return (
-        <span
-          key={key++}
-          className="tap-word"
-          onClick={(event) => {
-            event.stopPropagation();
-            onWordTap(clean.toLowerCase());
-          }}
-        >
-          {token}
+        <button type="button" className="entity-link" key={key}
+                onClick={(event) => { event.stopPropagation(); onEntityTap({ ...token.entity, context: text }); }}>
+          {wrapEmphasis(token.emphasis, token.text)}
+        </button>
+      );
+    }
+    if (token.kind === "word") {
+      return (
+        <span className="tap-word" key={key}
+              onClick={(event) => { event.stopPropagation(); onWordTap(token.word); }}>
+          {wrapEmphasis(token.emphasis, token.text)}
         </span>
       );
-    });
+    }
+    return <React.Fragment key={key}>{wrapEmphasis(token.kind, token.text)}</React.Fragment>;
   });
+}
+
+function wrapEmphasis(kind, text) {
+  if (kind === "strong") return <strong>{text}</strong>;
+  if (kind === "em") return <em>{text}</em>;
+  if (kind === "code") return <code>{text}</code>;
+  return text;
 }
 
 function findEntityIndex(haystack, name) {
@@ -1662,26 +1839,12 @@ function findEntityIndex(haystack, name) {
   return -1;
 }
 
-function renderEntityText(text, entities, onEntityTap) {
-  let remaining = text;
-  const out = [];
-  let key = 0;
-  while (remaining) {
-    const match = (entities || []).map((entity) => {
-      const idx = findEntityIndex(remaining, String(entity.name));
-      return idx >= 0 ? { entity, idx } : null;
-    }).filter(Boolean).sort((a, b) => a.idx - b.idx || b.entity.name.length - a.entity.name.length)[0];
-    if (!match) {
-      out.push(remaining);
-      break;
-    }
-    if (match.idx > 0) out.push(remaining.slice(0, match.idx));
-    const label = remaining.slice(match.idx, match.idx + match.entity.name.length);
-    out.push(<button type="button" className="entity-link" key={key++} onClick={(event) => { event.stopPropagation(); onEntityTap({ ...match.entity, context: text }); }}>{label}</button>);
-    remaining = remaining.slice(match.idx + match.entity.name.length);
-  }
-  return out;
-}
+// `renderEntityText` lived here until 2026-09-14. It consumed a string by
+// offset inside a `while (remaining)` loop, which terminates only as long as
+// every match has non-zero length -- an entity whose name was empty or
+// whitespace would have spun forever. `proseTokens` replaces it and cannot:
+// the scan is a `for` over a bounded token list, and an entity with a blank
+// name is filtered out before it gets there.
 
 /** The smallest markdown that makes the editor's replies readable.
  *
@@ -3497,7 +3660,7 @@ function RoutedBoundary({ children }) {
 // Exported for tests. The young-reader flow had no automated coverage at all,
 // which is how a dead end in the path a child uses survived unnoticed; a flow
 // that a seven-year-old walks should not be the least-tested screen in the app.
-export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard, ErrorBoundary, Lore, UniverseEditor };
+export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard, ErrorBoundary, Lore, UniverseEditor, Prose, InteractiveParagraph };
 
 createRoot(document.getElementById("root")).render(<Root />);
 
