@@ -24,7 +24,7 @@ jobs:
     # first test of an untried runner. Swap to [self-hosted] once that runner has
     # demonstrably completed a job, and hosted minutes drop to zero.
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -45,3 +45,21 @@ jobs:
       # bundle that does not compile would still break production.
       - name: Build
         run: npm run build
+
+      # 2026-09-14: two PRs shipped on 2026-09-13 that made the reader unusable
+      # on the family's phones, and BOTH passed everything above. One corrupted
+      # the prose only on the second render; the other symptom -- the page
+      # rendering at a third of viewport width -- is a layout fact, and jsdom
+      # applies no stylesheets and computes no geometry, so nothing in `npm
+      # test` can see it.
+      #
+      # This is the smallest check that could have caught it: a real browser, at
+      # three phone widths, asserting the document is not wider than the window.
+      # It renders the reader's own components against fixtures, so it needs no
+      # token, no server and no deployed build. It carries a canary fixture that
+      # MUST overflow, so a check that has quietly stopped working fails loudly.
+      - name: Install Chromium for the layout check
+        run: npx playwright install --with-deps chromium
+
+      - name: Layout check
+        run: node tests/layout/check-width.mjs
