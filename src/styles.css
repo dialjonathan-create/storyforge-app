@@ -244,32 +244,14 @@ h3 {
   left: 24px;
   right: 24px;
   width: auto;
-  /* Back on one side, the actions on the other. The title used to sit between
-     them and truncate on every real story name. */
-  justify-content: space-between;
-  transition: opacity 0.25s ease;
-  /* Two children: back, and the actions group pushed to the end. The title
-     used to sit between them; it is gone. The trailing controls are not a fixed
-     count -- 💬 is hidden for the youngest tier -- which is why they are one
-     group rather than their own columns. */
-  grid-template-columns: 48px 1fr;
+  /* Back, title, then one group for everything on the right. The trailing
+     controls are no longer a fixed count — 💬 is hidden for the youngest tier —
+     and a fixed template left a hole where it would have been. */
+  grid-template-columns: 48px 1fr auto;
 }
 
-.reader-header .reader-header-actions {
-  justify-self: end;
-}
-
-/* Out of the way while reading, not gone. A control a reader cannot find is
-   worse than one they can see through, so this is opacity and not display. */
-.reader-header-dim {
-  opacity: 0.28;
-}
-
-.reader-header-dim:focus-within {
-  opacity: 1;
-}
-
-.menu-save-spot,
+/* #25's switch-reader row survives the revert of #24; the save-spot row it sat
+   next to was #24's and goes back to being a button in the header. */
 .menu-switch-reader {
   width: 100%;
   margin-bottom: 18px;
@@ -814,31 +796,6 @@ h3 {
   font-size: 4.5em;
   line-height: 0.8;
 }
-
-/* A scene break. The prose writes it as `***` or `— ◈ —`, and until now the
-   reader printed those three asterisks as a paragraph of their own. */
-.scene-break {
-  width: 100%;
-  height: auto;
-  margin: 2.2em auto;
-  border: 0;
-  color: var(--gold-dim);
-  text-align: center;
-  overflow: visible;
-}
-
-.scene-break::before {
-  content: "◈";
-  display: block;
-  color: var(--gold-light);
-  font-size: 0.85em;
-  letter-spacing: 0.4em;
-  opacity: 0.75;
-}
-
-/* A paragraph after a scene break is not the first paragraph, so it must not
-   get the drop cap -- which the :first-child selector already handles, and
-   this comment exists so the next person does not "fix" it to :first-of-type. */
 
 .chapter-image {
   display: block;
