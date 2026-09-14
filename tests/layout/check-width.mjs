@@ -1,54 +1,68 @@
 /**
  * The gate the pipeline did not have.
  *
- * storyforge-app deploys to production on merge and its CI has never rendered a
- * page. On 2026-09-13 two PRs went out that made the reader unusable, and both
- * of them passed every test: the corruption only appeared on the SECOND render,
- * and the page being a third of viewport width is a layout fact that jsdom —
- * which applies no stylesheets and computes no geometry — cannot observe at all.
+ * storyforge-app deploys to production on merge, and its CI has never rendered
+ * a page. On 2026-09-13 two PRs went out that made the reader unusable on the
+ * family's phones, and both passed every test in the suite: the prose corrupted
+ * itself only on the SECOND render, and "the page is a third of viewport width"
+ * is a layout fact that jsdom — which applies no stylesheets and computes no
+ * geometry — cannot observe at all.
  *
- * So this runs a real browser at a real phone width and asserts the one thing
- * that was visibly wrong: the document must not be wider than the window.
+ * So this renders the reader's own components in a real browser at real phone
+ * widths and asserts the one thing that was visibly wrong: the document must
+ * not be wider than the window.
  *
- * It is deliberately small. It does not screenshot, diff pixels, or need a
- * token, a server or a deployed build — it renders the reader's own components
- * against fixture prose through the project's own dev server. A check that is
- * cheap enough to run on every pull request is worth more than a perfect one
- * that gets switched off.
+ * It builds its own harness and serves the output from a plain node server.
+ * The first version started `vite` as a background process and polled it, and
+ * the CI runner lost that race on the first run — a check that flakes is a
+ * check that gets deleted.
+ *
+ * It needs no token, no deployed build and no network. It is deliberately small:
+ * a cheap check that runs on every pull request is worth more than a thorough
+ * one that gets switched off.
  */
-import { spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
+import { createServer } from "node:http";
+import fs from "node:fs";
+import path from "node:path";
 import { chromium } from "playwright";
 import { FIXTURES } from "./fixtures.js";
 
-const PORT = 51731;
+const HERE = path.dirname(new URL(import.meta.url).pathname);
+const DIST = path.join(HERE, ".dist");
 const WIDTHS = [320, 390, 430];
-const EXECUTABLE = process.env.PLAYWRIGHT_CHROMIUM || undefined;
+const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
+// Vite keeps the input's path inside the output, so the page lands nested.
+const HARNESS = "tests/layout/harness.html";
 
-const vite = spawn("npx", ["vite", "--port", String(PORT), "--strictPort"], { stdio: "ignore" });
-const stop = () => { try { vite.kill("SIGTERM"); } catch { /* already gone */ } };
-process.on("exit", stop);
+execFileSync("npx", ["vite", "build", "--config", path.join(HERE, "vite.layout.config.js")],
+             { stdio: "inherit" });
 
-async function waitForServer() {
-  for (let i = 0; i < 60; i += 1) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${PORT}/tests/layout/harness.html`);
-      if (res.ok) return;
-    } catch { /* not up yet */ }
-    await new Promise((r) => setTimeout(r, 500));
+const server = createServer((req, res) => {
+  const urlPath = decodeURIComponent(new URL(req.url, "http://x").pathname);
+  const file = path.join(DIST, urlPath === "/" ? HARNESS : urlPath);
+  if (!file.startsWith(DIST) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+    res.writeHead(404).end("not found");
+    return;
   }
-  throw new Error("the dev server never came up");
-}
+  res.writeHead(200, { "Content-Type": TYPES[path.extname(file)] || "application/octet-stream" });
+  fs.createReadStream(file).pipe(res);
+});
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+const { port } = server.address();
 
-await waitForServer();
-const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ["--no-sandbox"] });
+const browser = await chromium.launch({
+  executablePath: process.env.PLAYWRIGHT_CHROMIUM || undefined,
+  args: ["--no-sandbox"],
+});
 const failures = [];
 let checked = 0;
 
 for (const name of Object.keys(FIXTURES)) {
   for (const width of WIDTHS) {
     const page = await browser.newPage({ viewport: { width, height: 780 } });
-    await page.goto(`http://127.0.0.1:${PORT}/tests/layout/harness.html?fixture=${name}`, { waitUntil: "load" });
-    await page.waitForSelector(name === "canary" ? "#root div" : ".prose p", { timeout: 15000 });
+    await page.goto(`http://127.0.0.1:${port}/${HARNESS}?fixture=${name}`, { waitUntil: "load" });
+    await page.waitForSelector(name === "canary" ? "#root div" : ".prose p", { timeout: 20000 });
     const seen = await page.evaluate(() => ({
       innerWidth: window.innerWidth,
       scrollWidth: document.documentElement.scrollWidth,
@@ -56,8 +70,8 @@ for (const name of Object.keys(FIXTURES)) {
     }));
     await page.close();
     checked += 1;
-    // One pixel of slack for sub-pixel rounding; the failure this catches was
-    // 1540 against 390.
+    // One pixel of slack for sub-pixel rounding. The failure this exists to
+    // catch was 1540 against 390.
     const overflows = seen.scrollWidth > seen.innerWidth + 1;
     const shouldOverflow = name === "canary";
     if (overflows !== shouldOverflow) {
@@ -67,7 +81,7 @@ for (const name of Object.keys(FIXTURES)) {
 }
 
 await browser.close();
-stop();
+server.close();
 
 if (failures.length) {
   console.error("Layout check FAILED:");
@@ -75,6 +89,6 @@ if (failures.length) {
   console.error("\nA page wider than the window is a page that scrolls sideways on a phone.");
   process.exit(1);
 }
-console.log(`Layout check passed: ${checked} renders, ${WIDTHS.join("/")}px wide.`);
+console.log(`Layout check passed: ${checked} renders at ${WIDTHS.join("/")}px.`);
 console.log("(The 'canary' fixture is asserted to overflow, so the check is known to be able to fail.)");
 process.exit(0);
