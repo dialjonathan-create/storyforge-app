@@ -1569,6 +1569,7 @@ h3 {
 .chat-markdown ol { margin: 0 0 8px; padding-left: 20px; }
 
 .chat-markdown li { margin: 2px 0; }
+.chat-markdown li .li-continuation { display: block; margin-top: 2px; opacity: 0.85; }
 
 .chat-markdown blockquote {
   margin: 8px 0;
