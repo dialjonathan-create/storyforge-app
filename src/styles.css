@@ -1484,16 +1484,26 @@ h3 {
 
 /* --- The chat sheet scrolls its transcript, never itself ---------------- */
 
+/* The chat sheet lives inside the VISIBLE viewport (2026-09-16). useKeyboardInset
+   publishes visualViewport's top and height; without them (desktop, jsdom) this
+   is the ordinary full-screen fixed box. */
+.bottom-sheet.chat-bottom-sheet {
+  inset: auto 0 auto 0;
+  top: var(--vv-top, 0px);
+  height: var(--vv-height, 100dvh);
+}
+
 .sheet-panel.chat-sheet {
   display: flex;
   flex-direction: column;
-  /* dvh, not vh: the dynamic viewport shrinks when the keyboard opens and vh
-     does not. With vh the compose row sat underneath the keyboard. */
-  max-height: 85dvh;
+  max-height: calc(var(--vv-height, 100dvh) - 12px);
   overflow: hidden;
-  /* Set by the visual-viewport listener on iOS, where the layout viewport does
-     not move for the keyboard even though dvh does. 0 everywhere else. */
-  padding-bottom: calc(22px + env(safe-area-inset-bottom) + var(--keyboard-inset, 0px));
+  padding-bottom: calc(22px + env(safe-area-inset-bottom));
+}
+
+/* Keyboard up: the home indicator is under the keyboard; its safe area is not needed. */
+.keyboard-open .sheet-panel.chat-sheet {
+  padding-bottom: 10px;
 }
 
 .sheet-panel.chat-sheet .chat-scroll {
