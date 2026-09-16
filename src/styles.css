@@ -1606,6 +1606,10 @@ h3 {
   font-size: 1.05em;
   color: var(--gold-light);
 }
+.proposal-choices { margin: 4px 0 6px; padding-left: 22px; }
+.proposal-choices li { margin: 4px 0; line-height: 1.4; }
+.proposal-note { margin: 0; font-size: 0.85rem; opacity: 0.75; }
+
 
 .proposal-opening {
   margin: 0;
