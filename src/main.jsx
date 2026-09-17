@@ -9,6 +9,7 @@ import StoryMap, { mappablePlaces } from "./StoryMap";
 
 const AbilityCommandDraftApprove = "storyforge.draft.approve.v1";
 const AbilityCommandDraftDismiss = "storyforge.draft.dismiss.v1";
+const AbilityCommandChapterChoicesSet = "storyforge.chapter.choices.set.v1";
 const AbilityCommandConversationList = "storyforge.conversation.list.v1";
 const ABILITY_URL = import.meta.env.VITE_ABILITY_URL || "https://ability-supervisor-service-818269465014.us-central1.run.app";
 // Scoped product token (2026-08-22): authorizes story.* / storyforge.* only.
@@ -1359,7 +1360,10 @@ function ChapterReader() {
       const suggested = Array.isArray(res.suggestedReplies) ? res.suggestedReplies : [];
       // #1542's contract: generation PROPOSES, approval writes. The envelope
       // carries the draft; nothing is saved until a tap.
-      const proposal = res.proposal && res.proposal.draftId ? res.proposal : null;
+      // A held chapter draft, or proposed end-of-chapter options for a chapter
+      // that already exists (storyforge.chapter.choices.set.v1). Both write
+      // nothing until a tap.
+      const proposal = res.proposal && (res.proposal.draftId || isChoicesProposal(res.proposal)) ? res.proposal : null;
       setChatThread((current) => [...(current || []), { role: "assistant", content: res.message || res.response || "(the story had no words)", kind, suggestedReplies: suggested, proposal }]);
       if (kind === "chapter" || kind === "edit" || kind === "chapter_edit") setChatSavedChapter(true);
     } catch (error) {
@@ -1408,6 +1412,36 @@ function ChapterReader() {
       typeof res?.chapterNumber === "number" && Number.isFinite(res.chapterNumber)
         ? `Saved as chapter ${res.chapterNumber}.`
         : "Saved.");
+  }
+
+  // The one write a choices proposal can make. It sets the options at the end of
+  // an EXISTING chapter and nothing else; the confirmation is built from the
+  // server's read-back (`verified`, `chapterNumber`, `choices`), never from the
+  // proposal, and an unverified write is reported as one.
+  async function approveChoices(proposal) {
+    try {
+      const res = await execute(AbilityCommandChapterChoicesSet, {
+        tenantId: "core",
+        userId: activeReaders[0] || "jonathan",
+        universeId: id,
+        storyId,
+        chapterNumber: proposal.chapterNumber,
+        choices: proposal.choices,
+      });
+      setChatThread((current) => (current || []).map((m) => (m.proposal === proposal ? { ...m, proposal: null } : m)));
+      const count = Array.isArray(res?.choices) ? res.choices.length : 0;
+      const text = res?.verified === true && typeof res?.chapterNumber === "number"
+        ? `Saved ${count} option${count === 1 ? "" : "s"} at the end of chapter ${res.chapterNumber}. The chapter's text was not touched.`
+        : (res?.message || "The options were written but could not be verified. Check the chapter before relying on them.");
+      setChatThread((current) => [...(current || []), { role: "assistant", content: text, kind: res?.verified ? "note" : "error" }]);
+    } catch (error) {
+      setChatThread((current) => [...(current || []), { role: "assistant", content: error.message || "Those options were not saved.", kind: "error" }]);
+    }
+  }
+
+  function dismissChoices(proposal) {
+    setChatThread((current) => [...(current || []).map((m) => (m.proposal === proposal ? { ...m, proposal: null } : m)),
+      { role: "assistant", content: "Not saved. The chapter's options are unchanged.", kind: "note" }]);
   }
 
   function dismissDraft(proposal) {
@@ -1518,7 +1552,7 @@ function ChapterReader() {
           </div>
         )}
       >
-        <StoryChatSheet thread={chatThread} busy={chatBusy} onSend={sendChatMessage} onClose={closeChat} onApprove={approveDraft} onDismiss={dismissDraft} />
+        <StoryChatSheet thread={chatThread} busy={chatBusy} onSend={sendChatMessage} onClose={closeChat} onApprove={approveDraft} onDismiss={dismissDraft} onApproveChoices={approveChoices} onDismissChoices={dismissChoices} />
       </ErrorBoundary>
       <InteractionSheet target={interactTarget} tier={tier} chapter={chapter} universeId={id} storyId={storyId} userId={activeReaders[0] || "jonathan"} onClose={() => setInteractTarget(null)} />
       <WordDefinition word={defineWord} onClose={() => setDefineWord(null)} />
@@ -2098,6 +2132,48 @@ function ProposalCard({ proposal, busy, onApprove, onDismiss, onRevise }) {
   );
 }
 
+function isChoicesProposal(proposal) {
+  return Boolean(proposal && proposal.path === "chapter_choices" && typeof proposal.chapterNumber === "number"
+    && Array.isArray(proposal.choices) && proposal.choices.length);
+}
+
+/** Proposed end-of-chapter options for a chapter that already exists.
+ *
+ * "Save these as the options for chapter 1" used to have no door that did not
+ * rewrite the chapter. This card is the explicit, non-destructive one: it names
+ * the chapter, lists exactly what will be saved, says the text is not touched,
+ * and writes once on a tap.
+ */
+function ChoicesProposalCard({ proposal, busy, onApprove, onDismiss }) {
+  const [pending, setPending] = useState("");
+  if (!isChoicesProposal(proposal)) return null;
+  const disabled = busy || Boolean(pending);
+  async function run(kind, fn) {
+    if (disabled) return;
+    setPending(kind);
+    try { await fn(); } finally { setPending(""); }
+  }
+  return (
+    <section className="proposal-card choices-proposal" aria-label={`Proposed options for chapter ${proposal.chapterNumber}`}>
+      <div className="proposal-kicker">Options at the end of chapter {proposal.chapterNumber} · not saved</div>
+      <ol className="proposal-choices">
+        {proposal.choices.map((choice, index) => (
+          <li key={choice.id || index}>{typeof choice === "string" ? choice : choice.text}</li>
+        ))}
+      </ol>
+      <p className="proposal-note">Only the options change. The chapter's text stays exactly as it is.</p>
+      <div className="proposal-actions">
+        <button type="button" className="proposal-approve" disabled={disabled} onClick={() => run("approve", () => onApprove(proposal))}>
+          {pending === "approve" ? "Saving…" : `Save as chapter ${proposal.chapterNumber}'s options`}
+        </button>
+        <button type="button" className="proposal-dismiss" disabled={disabled} onClick={() => run("dismiss", () => onDismiss(proposal))}>
+          Not these
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function SuggestedReplies({ replies, onPick, disabled }) {
   if (!replies?.length) return null;
   return (
@@ -2342,7 +2418,7 @@ export function mergeConversationHistory(history, local) {
   return [...older.slice(0, older.length - overlap), ...current];
 }
 
-function StoryChatSheet({ thread, busy, onSend, onClose, onApprove, onDismiss }) {
+function StoryChatSheet({ thread, busy, onSend, onClose, onApprove, onDismiss, onApproveChoices = () => {}, onDismissChoices = () => {} }) {
   const [text, setText] = useState("");
   const scrollRef = useRef(null);
   useEffect(() => {
@@ -2381,7 +2457,10 @@ function StoryChatSheet({ thread, busy, onSend, onClose, onApprove, onDismiss })
                   ? <em>{message.content}</em>
                   : <div className="chat-markdown">{renderMarkdown(message.content)}</div>}
             </div>
-            {index === thread.length - 1 && message.role === "assistant" && message.proposal && (
+            {index === thread.length - 1 && message.role === "assistant" && isChoicesProposal(message.proposal) && (
+              <ChoicesProposalCard proposal={message.proposal} busy={busy} onApprove={onApproveChoices} onDismiss={onDismissChoices} />
+            )}
+            {index === thread.length - 1 && message.role === "assistant" && message.proposal?.draftId && (
               <ProposalCard
                 proposal={message.proposal}
                 busy={busy}
@@ -3715,7 +3794,7 @@ function RoutedBoundary({ children }) {
 // Exported for tests. The young-reader flow had no automated coverage at all,
 // which is how a dead end in the path a child uses survived unnoticed; a flow
 // that a seven-year-old walks should not be the least-tested screen in the app.
-export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard, ErrorBoundary, Lore, UniverseEditor, Prose, InteractiveParagraph };
+export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard, ChoicesProposalCard, ErrorBoundary, Lore, UniverseEditor, Prose, InteractiveParagraph };
 
 createRoot(document.getElementById("root")).render(<Root />);
 
