@@ -1903,12 +1903,27 @@ function renderInline(text, keyPrefix = "i") {
   });
 }
 
-/** Block-level parse. Returns React nodes, never HTML. */
+/** Block-level parse. Returns React nodes, never HTML.
+ *
+ * Lists are LOOSE-aware (2026-09-16). The editor writes numbered options with a
+ * blank line between items and a parenthetical on the next line:
+ *
+ *     1. **"Forget the speed limits…"**
+ *        (Push Jonathan to drive…)
+ *
+ *     2. **"Wait—if the compass is 1885…"**
+ *
+ * A blank line used to close the list, so each item became its own <ol> and a
+ * seven-year-old saw "1. / 1. / 1.". Now a blank line only ends a list when the
+ * next non-blank line is not another item of the same kind, an indented line
+ * continues the item above it, and an ordered list starts at the number the
+ * source gave its first item.
+ */
 function renderMarkdown(source) {
   const lines = String(source ?? "").split("\n");
   const blocks = [];
   let paragraph = [];
-  let list = null;   // { ordered, items: [] }
+  let list = null;   // { ordered, start, items: [] }
 
   const flushParagraph = () => {
     if (!paragraph.length) return;
@@ -1919,10 +1934,17 @@ function renderMarkdown(source) {
   const flushList = () => {
     if (!list) return;
     const Tag = list.ordered ? "ol" : "ul";
+    const startAttr = list.ordered && list.start !== 1 ? { start: list.start } : {};
     blocks.push(
-      <Tag key={`l${blocks.length}`}>
+      <Tag key={`l${blocks.length}`} {...startAttr}>
         {list.items.map((item, index) => (
-          <li key={index}>{renderInline(item, `l${blocks.length}-${index}`)}</li>
+          <li key={index}>
+            {item.map((part, partIndex) => (
+              partIndex === 0
+                ? <React.Fragment key={partIndex}>{renderInline(part, `l${blocks.length}-${index}-${partIndex}`)}</React.Fragment>
+                : <span key={partIndex} className="li-continuation">{renderInline(part, `l${blocks.length}-${index}-${partIndex}`)}</span>
+            ))}
+          </li>
         ))}
       </Tag>
     );
@@ -1932,7 +1954,10 @@ function renderMarkdown(source) {
 
   for (const raw of lines) {
     const line = raw.replace(/\s+$/, "");
-    if (!line.trim()) { flush(); continue; }
+    if (!line.trim()) {
+      flushParagraph();
+      continue;
+    }
 
     const heading = /^(#{1,6})\s+(.*)$/.exec(line);
     if (heading) {
@@ -1953,12 +1978,21 @@ function renderMarkdown(source) {
     }
 
     const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
-    const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    const numbered = /^\s*(\d+)[.)]\s+(.*)$/.exec(line);
     if (bullet || numbered) {
       flushParagraph();
       const ordered = Boolean(numbered);
-      if (!list || list.ordered !== ordered) { flushList(); list = { ordered, items: [] }; }
-      list.items.push((bullet || numbered)[1]);
+      if (!list || list.ordered !== ordered) {
+        flushList();
+        list = { ordered, start: ordered ? Math.max(1, parseInt(numbered[1], 10) || 1) : 1, items: [] };
+      }
+      list.items.push([numbered ? numbered[2] : bullet[1]]);
+      continue;
+    }
+
+    // An indented line under an item belongs to that item, blank line or not.
+    if (list && /^\s{2,}\S/.test(raw)) {
+      list.items[list.items.length - 1].push(line.trim());
       continue;
     }
 
