@@ -7,6 +7,13 @@ import NarrationPanel from "./NarrationPanel";
 import { fetchVoices } from "./kokoro";
 import StoryMap, { mappablePlaces } from "./StoryMap";
 
+// The build this browser is actually running, for when "did it deploy?" is
+// asked from a phone rather than from gcloud. Also served as /version.json.
+const BUILD_SHA = typeof __GIT_SHA__ === "string" ? __GIT_SHA__ : "unknown";
+if (typeof window !== "undefined") {
+  window.__STORYFORGE_BUILD__ = BUILD_SHA;
+}
+
 const AbilityCommandDraftApprove = "storyforge.draft.approve.v1";
 const AbilityCommandDraftDismiss = "storyforge.draft.dismiss.v1";
 const AbilityCommandChapterChoicesSet = "storyforge.chapter.choices.set.v1";
