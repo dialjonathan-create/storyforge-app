@@ -128,18 +128,25 @@ describe("when there is nothing to restore", () => {
 // ---------------------------------------------------------------------------
 
 describe("the divider label", () => {
-  const now = new Date("2026-09-13T20:00:00Z");
+  // Local time on purpose. The label answers "how long ago was that for the
+  // person holding the phone", so the function compares LOCAL calendar days --
+  // and a test that writes its timestamps in UTC only agrees with it in a
+  // UTC-ish zone. In Hawaii, "2026-09-13T02:00:00Z" is the evening of the 12th,
+  // so this suite failed on the family's own machine and passed in CI, which is
+  // the worst way round.
+  const at = (day, hour) => new Date(2026, 8, day, hour, 0, 0);
+  const now = at(13, 20);
 
   it("says Earlier today for the same day", () => {
-    expect(historyDividerLabel("2026-09-13T02:00:00Z", now)).toBe("Earlier today");
+    expect(historyDividerLabel(at(13, 2).toISOString(), now)).toBe("Earlier today");
   });
 
   it("says Yesterday for the day before", () => {
-    expect(historyDividerLabel("2026-09-12T23:00:00Z", now)).toBe("Yesterday");
+    expect(historyDividerLabel(at(12, 23).toISOString(), now)).toBe("Yesterday");
   });
 
   it("gives a date for anything older", () => {
-    const label = historyDividerLabel("2026-09-04T10:00:00Z", now);
+    const label = historyDividerLabel(at(4, 10).toISOString(), now);
     expect(label).not.toBe("Yesterday");
     expect(label).not.toBe("Earlier today");
     expect(label).toMatch(/4/);
@@ -152,6 +159,6 @@ describe("the divider label", () => {
   });
 
   it("treats a clock-skewed future timestamp as today rather than a negative day count", () => {
-    expect(historyDividerLabel("2026-09-14T02:00:00Z", now)).toBe("Earlier today");
+    expect(historyDividerLabel(at(14, 2).toISOString(), now)).toBe("Earlier today");
   });
 });
