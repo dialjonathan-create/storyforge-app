@@ -17,6 +17,10 @@ steps:
       - build
       - 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/storyforge-app:$SHORT_SHA'
       - '--builder=gcr.io/buildpacks/builder:google-22'
+      # The bundle is built here, so the sha has to arrive here: vite writes it
+      # into dist/version.json and into the app. Without this the service
+      # publishes nothing a browser can check against main.
+      - '--env=VITE_GIT_SHA=$SHORT_SHA'
       - '--publish'
 
   - id: deploy
@@ -29,6 +33,9 @@ steps:
       - '--image=us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/storyforge-app:$SHORT_SHA'
       - '--region=us-central1'
       - '--platform=managed'
+      # Same convention as the supervisor's deploy.yml, so "is this service
+      # stale against main?" is answerable from the service description too.
+      - '--update-env-vars=ABILITY_GIT_SHA=$COMMIT_SHA,ABILITY_SERVICE_NAME=storyforge-app'
       - '--quiet'
 
 timeout: '900s'
