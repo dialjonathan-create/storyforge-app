@@ -1662,6 +1662,56 @@ h3 {
 
 .proposal-actions button:disabled { opacity: 0.45; cursor: default; }
 
+/* --- The write tap ------------------------------------------------------- */
+/* Same card as the proposal above, standing in the reading column where the
+   choices were. The difference from the choice panel is the point of it: the
+   choices are an open, borderless list of wide soft rectangles with no edge to
+   them, and this is a bounded gold-edged box with one filled pill inside it.
+   They are never on screen together. */
+.write-chapter-card {
+  align-self: stretch;
+  max-width: 680px;
+  margin: 40px auto 0;
+  padding: 18px 20px;
+  gap: 10px;
+}
+
+.write-chapter-pick {
+  margin: 0;
+  font-family: "Crimson Pro", Georgia, serif;
+  font-size: 1.1rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+/* Not full width, unlike every button in the choice panel: this is one small
+   deliberate thing to press, not another option in a list. */
+.write-chapter-button {
+  align-self: flex-start;
+  min-height: 52px;
+  padding: 0 26px;
+  font-family: Cinzel, Georgia, serif;
+  font-size: 1.02rem;
+}
+
+.write-chapter-error {
+  margin: 4px 0 0;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+/* The server's own words, for the adult reading over the child's shoulder. */
+.write-chapter-detail {
+  display: block;
+  margin-top: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  opacity: 0.6;
+  word-break: break-word;
+}
+
 /* --- Suggested replies --------------------------------------------------- */
 /* Aligned left, under the editor's turn, because they are answers TO it. Wrapped
    rather than scrolled: a horizontal scroller hides options, and the whole point

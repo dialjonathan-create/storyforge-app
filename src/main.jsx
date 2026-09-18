@@ -18,6 +18,15 @@ const AbilityCommandDraftApprove = "storyforge.draft.approve.v1";
 const AbilityCommandDraftDismiss = "storyforge.draft.dismiss.v1";
 const AbilityCommandChapterChoicesSet = "storyforge.chapter.choices.set.v1";
 const AbilityCommandConversationList = "storyforge.conversation.list.v1";
+// The only call that writes a chapter from a recorded choice (supervisor #1627).
+// Recording a choice is a fact about what the reader wanted; writing the next
+// chapter is a decision with a cost, and until 2026-09-18 they were the same
+// call -- `choice.record.v1` armed a 30-second timer and then generated. A
+// seven-year-old tapping an option started a model call, a chapter save, a
+// postprocess pass and a Drive export, and saying nothing for half a minute
+// counted as consent. It fired on Field Notes at 2026-09-18T06:20:18Z and wrote
+// a chapter nobody asked for. This is the second tap.
+const AbilityCommandChapterRequest = "storyforge.chapter.request.v1";
 const ABILITY_URL = import.meta.env.VITE_ABILITY_URL || "https://ability-supervisor-service-818269465014.us-central1.run.app";
 // Scoped product token (2026-08-22): authorizes story.* / storyforge.* only.
 const STORYFORGE_TOKEN =
@@ -1029,6 +1038,10 @@ function ChapterReader() {
   const [choiceRevealPending, setChoiceRevealPending] = useState(false);
   const [showChoiceTooltip, setShowChoiceTooltip] = useState(false);
   const [waiting, setWaiting] = useState(null);
+  // A recorded choice that is waiting for somebody to ask for the chapter.
+  const [pendingWrite, setPendingWrite] = useState(() => readPendingWrite(storyId));
+  const [writeBusy, setWriteBusy] = useState(false);
+  const [writeError, setWriteError] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [progress, setProgress] = useState(0);
   const [entities, setEntities] = useState([]);
@@ -1113,13 +1126,30 @@ function ChapterReader() {
   }, [id, tier]);
 
   useEffect(() => {
+    setPendingWrite(readPendingWrite(storyId));
+    setWriteError(null);
+    setWriteBusy(false);
+  }, [storyId]);
+
+  useEffect(() => {
     if (!chapterNumber) return undefined;
     setChoicesVisible(false);
     setChoiceRevealPending(false);
     setWaiting(null);
     setChapter(null);
     getChapter(id, storyId, chapterNumber)
-      .then((res) => setChapter(res))
+      .then((res) => {
+        setChapter(res);
+        // The chapter the card was offering to write now exists -- somebody
+        // asked for it, here or somewhere else. The card has nothing left to
+        // offer, and an offer to write a chapter that is already written is
+        // how two chapters were lost.
+        setPendingWrite((current) => {
+          if (current?.chapterNumber !== res?.chapterNumber) return current;
+          writePendingWrite(storyId, null);
+          return null;
+        });
+      })
       .catch(() => setChapter({ ok: false, error: "chapter_not_found" }));
     const timer = setTimeout(() => queueChoiceReveal(), 240000);
     return () => clearTimeout(timer);
@@ -1196,7 +1226,10 @@ function ChapterReader() {
   }
 
   useEffect(() => {
-    if (!waiting?.chapterNumber) return undefined;
+    // `recording` is the gap between the tap and the server's answer. Nothing is
+    // queued yet, and chapter.status.v1 answers "generating" for a chapter it
+    // has never heard of, so polling here invents a generation.
+    if (!waiting?.chapterNumber || waiting.recording) return undefined;
     let cancelled = false;
     const targetChapter = waiting.chapterNumber;
     const startedAt = waiting.startedAt || Date.now();
@@ -1246,7 +1279,7 @@ function ChapterReader() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [id, storyId, waiting?.chapterNumber, waiting?.startedAt]);
+  }, [id, storyId, waiting?.chapterNumber, waiting?.startedAt, waiting?.recording]);
 
   useSwipe((dir) => {
     if (!chapterNumber) return;
@@ -1261,24 +1294,77 @@ function ChapterReader() {
     }
   });
 
+  // Tapping a choice says what the reader wants. It does not write anything.
+  //
+  // The waiting screen here used to go up before the call and stay up: "The
+  // story is being written..." was printed the instant a child's finger left
+  // the glass, whether or not anything was being written. Post-#1627 the server
+  // records and stops, so that screen would have spun until the 120-second
+  // timeout on a chapter that nobody had asked for. The screen now says only
+  // what is true -- the pick is being saved -- and then either the server says
+  // it is writing (and the waiting screen is honest) or it says it is waiting
+  // for a request, and the card goes up instead.
   async function choose(choice) {
     const nextChapter = chapterNumber + 1;
-    setWaiting({ chapterNumber: nextChapter, startedAt: Date.now(), messageIndex: 0 });
+    const choiceText = choice.text || String(choice);
+    setWriteError(null);
+    setWaiting({ chapterNumber: nextChapter, startedAt: Date.now(), messageIndex: 0, recording: true });
     try {
-      await execute("storyforge.choice.record.v1", {
+      const res = await execute("storyforge.choice.record.v1", {
         tenantId: "core",
         userId: "jonathan",
         universeId: id,
         storyId,
         chapterNumber,
         choiceId: String(choice.id || ""),
-        choiceText: choice.text || String(choice),
+        choiceText,
         madeBy: activeReaders[0] || "jonathan",
         protagonistId: readingGroup,
         protagonistGroup: activeReaders.length > 1 ? readingGroup : null,
       });
+      if (heldForRequest(res)) {
+        const pending = {
+          chapterNumber: Number(res?.chapterNumber) || nextChapter,
+          choiceText,
+          madeBy: activeReaders[0] || "jonathan",
+          narratorOnly: res?.status === "awaiting_narrator" || res?.awaitingNarrator === true,
+          recordedAt: Date.now(),
+        };
+        setPendingWrite(pending);
+        writePendingWrite(storyId, pending);
+        setWaiting(null);
+        return;
+      }
+      setWaiting({ chapterNumber: Number(res?.chapterNumber) || nextChapter, startedAt: Date.now(), messageIndex: 0 });
     } catch (error) {
       setWaiting({ chapterNumber: nextChapter, startedAt: Date.now(), failed: true, error: error.message || "Choice could not be recorded." });
+    }
+  }
+
+  // The write tap. The only thing in this app that asks for a chapter to exist.
+  async function requestChapter() {
+    if (!pendingWrite?.chapterNumber || writeBusy) return;
+    const target = pendingWrite.chapterNumber;
+    setWriteBusy(true);
+    setWriteError(null);
+    try {
+      const res = await execute(AbilityCommandChapterRequest, {
+        tenantId: "core",
+        userId: "jonathan",
+        universeId: id,
+        storyId,
+        chapterNumber: target,
+        requestedBy: activeReaders[0] || "jonathan",
+      });
+      setPendingWrite(null);
+      writePendingWrite(storyId, null);
+      setWaiting({ chapterNumber: Number(res?.chapterNumber) || target, startedAt: Date.now(), messageIndex: 0 });
+    } catch (error) {
+      // The pick stays recorded and the card stays up. A failed ask is not a
+      // reason to throw away what the reader already decided.
+      setWriteError(writeChapterMessage(error, target));
+    } finally {
+      setWriteBusy(false);
     }
   }
 
@@ -1466,11 +1552,14 @@ function ChapterReader() {
   }
 
   if (!chapter || !chapterNumber) return <ReadingLoading text="Turning the page..." />;
+  // The card belongs to the chapter the reader just finished, not to whichever
+  // chapter they have since paged back to.
+  const awaitingWrite = Boolean(pendingWrite?.chapterNumber && pendingWrite.chapterNumber === chapterNumber + 1);
   const waitMessages = waiting?.kind === "reshape" ? RESHAPE_WAIT_MESSAGES : CHAPTER_WAIT_MESSAGES;
   if (waiting) {
     return (
       <WaitingState
-        text={waitMessages[waiting.messageIndex || 0]}
+        text={waiting.recording ? "Saving what you picked..." : waitMessages[waiting.messageIndex || 0]}
         timedOut={waiting.timedOut}
         error={waiting.error}
         onRetry={() => setWaiting((current) => current ? { ...current, startedAt: Date.now(), timedOut: false, failed: false, error: "" } : current)}
@@ -1521,8 +1610,22 @@ function ChapterReader() {
             <Prose chapter={chapter} tier={tier} entities={entities} onLongPress={setReshapePromptPoint} onEntityTap={setInteractTarget} onWordTap={tier !== 1 ? setDefineWord : undefined} pulseFrom={reshapedPulse ? reshapeAnchor?.index : null} />
           </ErrorBoundary>
         )}
-        {choiceRevealPending && <div className="choice-sweep" />}
-        <ChoicePanel visible={choicesVisible} chapter={chapter} readers={activeReaders} onChoose={choose} showTooltip={showChoiceTooltip} onDismissTooltip={() => setShowChoiceTooltip(false)} />
+        {choiceRevealPending && !awaitingWrite && <div className="choice-sweep" />}
+        {/* One or the other, never both. The choices are the question; the card
+            is the answer already given and the separate act of writing it up.
+            A reader looking at the card has no choice button on the screen to
+            confuse it with. */}
+        {awaitingWrite ? (
+          <WriteNextChapterCard
+            pending={pendingWrite}
+            busy={writeBusy}
+            error={writeError?.text}
+            detail={writeError?.detail}
+            onWrite={requestChapter}
+          />
+        ) : (
+          <ChoicePanel visible={choicesVisible} chapter={chapter} readers={activeReaders} onChoose={choose} showTooltip={showChoiceTooltip} onDismissTooltip={() => setShowChoiceTooltip(false)} />
+        )}
         {/* 2026-09-13: the talk bar is gone. It opened the same StoryChatSheet
             the 💬 in the header opens, and it sat there permanently taking a
             third of the reading view to do it. The reading view is prose. */}
@@ -2177,6 +2280,55 @@ function ChoicesProposalCard({ proposal, busy, onApprove, onDismiss }) {
           Not these
         </button>
       </div>
+    </section>
+  );
+}
+
+/** The second tap: the one that writes a chapter.
+ *
+ * Modelled on ChoicesProposalCard above (#31) rather than invented fresh --
+ * same card, same kicker, same one gold pill that does the write -- because the
+ * pattern is already "here is exactly what will be written, and which chapter,
+ * and nothing happens until you tap". This one names the chapter number and
+ * quotes the choice that is waiting.
+ *
+ * It is deliberately nothing like the choice panel underneath the prose. That
+ * is an open list of soft, full-width, left-aligned options with no border; a
+ * tap there says what the reader wants and writes no chapter. This is a bounded
+ * gold-edged card with a single pill button. A reader who taps a choice cannot
+ * have tapped this, because this is not on the screen until the choice is
+ * already recorded and the choices are gone.
+ */
+function WriteNextChapterCard({ pending, busy, error, detail, onWrite }) {
+  if (!pending?.chapterNumber) return null;
+  const n = pending.chapterNumber;
+  return (
+    <section className="proposal-card write-chapter-card" aria-label={`Write chapter ${n}`}>
+      <div className="proposal-kicker">Chapter {n} is not written yet</div>
+      {pending.choiceText && <p className="write-chapter-pick">You picked: “{pending.choiceText}”</p>}
+      {pending.narratorOnly ? (
+        <p className="proposal-note">A grown-up has to ask for chapter {n}. Your pick is saved until then.</p>
+      ) : (
+        <>
+          <p className="proposal-note">Tap the button to make chapter {n}. Nothing happens until you do.</p>
+          <div className="proposal-actions">
+            <button
+              type="button"
+              className="proposal-approve write-chapter-button"
+              disabled={busy}
+              onClick={onWrite}
+            >
+              {busy ? `Writing chapter ${n}…` : `Write chapter ${n}`}
+            </button>
+          </div>
+        </>
+      )}
+      {error && (
+        <p className="write-chapter-error" role="alert">
+          {error}
+          {detail ? <span className="write-chapter-detail">{detail}</span> : null}
+        </p>
+      )}
     </section>
   );
 }
@@ -2919,6 +3071,75 @@ function readBookmark(storyId) {
 
 function writeBookmark(storyId, bookmark) {
   localStorage.setItem(`sf_bookmark_${storyId}`, JSON.stringify(bookmark));
+}
+
+// A choice that has been recorded and is waiting for somebody to ask for the
+// chapter. It is kept on the device because the server cannot be asked about
+// it: `storyforge.chapter.status.v1` folds every queue status it does not
+// recognise into "generating", so an `awaiting_request` item reads back as a
+// generation that is already running. Polling it would show a spinner for a
+// chapter nobody has asked for -- exactly the lie this whole change removes.
+// Keyed by storyId alone, like the bookmark, so it survives a reload, a reader
+// switch and a closed tab.
+function readPendingWrite(storyId) {
+  try {
+    const value = JSON.parse(localStorage.getItem(`sf_pending_write_${storyId}`) || "null");
+    return value && value.chapterNumber ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePendingWrite(storyId, pending) {
+  try {
+    if (pending) localStorage.setItem(`sf_pending_write_${storyId}`, JSON.stringify(pending));
+    else localStorage.removeItem(`sf_pending_write_${storyId}`);
+  } catch {
+    // Private mode. The card is still correct for this session.
+  }
+}
+
+/** Did the server record the choice and stop, rather than start writing?
+ *
+ * Post-#1627 `choice.record.v1` answers `autoGenerates: false` with
+ * `status: "awaiting_request"` and names the call that writes. A server that
+ * predates #1627 answers `awaitingDirection: true` with a non-zero
+ * `directionTimeoutSeconds`, which means a chapter really is coming whether or
+ * not anybody asks -- so that server keeps the old waiting screen, because on
+ * it the waiting screen is true.
+ */
+function heldForRequest(result) {
+  if (!result) return false;
+  if (result.status === "awaiting_request" || result.awaitingRequest === true) return true;
+  if (result.status === "awaiting_narrator" || result.awaitingNarrator === true) return true;
+  return result.autoGenerates === false;
+}
+
+// A server that has not deployed `storyforge.chapter.request.v1` refuses it at
+// the dispatcher, before any handler: HTTP 403 COMMAND_NOT_DECLARED_IN_CODE, or
+// 404 UNKNOWN_CANONICAL_COMMAND when the code is there and the binding is not.
+const CHAPTER_REQUEST_MISSING = /COMMAND_NOT_DECLARED_IN_CODE|UNKNOWN_CANONICAL_COMMAND|not declared in this service|no firestore binding/i;
+
+/** What to say to a seven-year-old when the chapter was not written.
+ *
+ * `detail` is the server's own words, kept verbatim and shown small, because
+ * the person who has to fix it is reading over the child's shoulder.
+ */
+function writeChapterMessage(error, chapterNumber) {
+  const raw = String(error?.message || error || "").trim();
+  const n = chapterNumber;
+  if (CHAPTER_REQUEST_MISSING.test(raw)) {
+    return {
+      text: `Not yet. The app asked for chapter ${n}, but the story server does not know how to write one this way yet. Your pick is saved. Try again later.`,
+      detail: raw,
+    };
+  }
+  if (/chapter_exists/i.test(raw)) return { text: `Chapter ${n} is already written. Turn the page to read it.`, detail: "" };
+  if (/no_recorded_choice/i.test(raw)) return { text: `The story did not keep your pick. Tap what happens next again.`, detail: raw };
+  if (/already_generating|already_complete/i.test(raw)) return { text: `Chapter ${n} is already being written. It will be here soon.`, detail: "" };
+  if (/awaiting_narrator/i.test(raw)) return { text: `A grown-up has to ask for chapter ${n}.`, detail: "" };
+  if (/not signed in/i.test(raw)) return { text: raw, detail: "" };
+  return { text: `Chapter ${n} was not written. Nothing is lost — your pick is saved. Try again in a minute.`, detail: raw };
 }
 
 async function getChapter(universeId, storyId, chapterNumber) {
@@ -3801,7 +4022,7 @@ function RoutedBoundary({ children }) {
 // Exported for tests. The young-reader flow had no automated coverage at all,
 // which is how a dead end in the path a child uses survived unnoticed; a flow
 // that a seven-year-old walks should not be the least-tested screen in the app.
-export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard, ChoicesProposalCard, ErrorBoundary, Lore, UniverseEditor, Prose, InteractiveParagraph };
+export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard, ChoicesProposalCard, WriteNextChapterCard, ChoicePanel, heldForRequest, writeChapterMessage, AbilityCommandChapterRequest, ErrorBoundary, Lore, UniverseEditor, Prose, InteractiveParagraph };
 
 createRoot(document.getElementById("root")).render(<Root />);
 
