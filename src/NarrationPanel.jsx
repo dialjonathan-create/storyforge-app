@@ -1,10 +1,35 @@
 import React, { useState, useEffect, useRef } from "react";
 import { fetchVoices, synthesize } from "./kokoro";
 
-// Segments chapter prose into paragraphs.
+// A scene break and inline emphasis, in the same spellings the reader uses
+// (SCENE_BREAK and MD_SPAN in main.jsx). Duplicated rather than imported:
+// main.jsx imports this file, so importing back would be circular.
+const SCENE_BREAK = /^\s*(?:\*\*\*|---|—\s*◈\s*—|◈)\s*$/;
+const EMPHASIS = /(\*\*|__)(?=\S)([\s\S]*?\S)\1|(\*|_)(?=\S)([^*_\n]*?\S)\3|`([^`\n]+)`/g;
+
+/** What a paragraph sounds like: cues removed, emphasis markers removed.
+ *
+ * Before 2026-09-21 the raw line went to Kokoro, so "**brass**" and a
+ * "***" scene break were handed to the voice model verbatim.
+ */
+export function speakable(line) {
+  return stripHtmlComments(line)
+    .replace(EMPHASIS, (match, _d, strong, _s, em, code) => strong ?? em ?? code ?? match)
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Segments chapter prose into the paragraphs that are actually spoken. Scene
+// breaks and lines that are nothing but a cue are not paragraphs -- silence
+// is not a segment -- and every segment is already speakable.
 export function segmentProse(prose) {
   if (!prose) return [];
-  return String(prose).split(/\n+/).filter(Boolean);
+  return String(prose)
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line && !SCENE_BREAK.test(stripHtmlComments(line)))
+    .map(speakable)
+    .filter((text) => /[\p{L}\p{N}]/u.test(text));
 }
 
 export function stripHtmlComments(text) {

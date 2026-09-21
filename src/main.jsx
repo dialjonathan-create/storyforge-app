@@ -2028,7 +2028,10 @@ function findEntityIndex(haystack, name) {
  * numbered lists, blockquotes, paragraphs. Not supported: tables, links, images,
  * raw HTML. The editor does not emit them, and each one is more surface.
  */
-const MD_INLINE = /(\*\*[^*]+\*\*|__[^_]+__|\*[^*\n]+\*|_[^_\n]+_|`[^`\n]+`)/g;
+// A delimiter must sit against a non-space character, as CommonMark requires
+// and as MD_SPAN already does. The looser pattern turned "2 * 3 * 4" into
+// "2 <em> 3 </em> 4" -- arithmetic silently rewritten (found porting to iOS).
+const MD_INLINE = /(\*\*(?=\S)[^*]*?\S\*\*|__(?=\S)[^_]*?\S__|\*(?=\S)[^*\n]*?\S\*|_(?=\S)[^_\n]*?\S_|`[^`\n]+`)/g;
 
 function renderInline(text, keyPrefix = "i") {
   const parts = String(text ?? "").split(MD_INLINE).filter((part) => part !== "");
