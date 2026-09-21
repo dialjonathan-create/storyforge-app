@@ -203,8 +203,8 @@ async function execute(command, args = {}) {
     body: JSON.stringify({ command, args: { requestedBy: currentReaderId, ...args } }),
   });
   const data = await response.json().catch(() => ({}));
-  if (response.status === 401) throw new Error("Storyforge is not signed in on this device (no token). Ask Jonathan.");
-  if (!response.ok || data.ok === false || data.error) throw new Error(data.message || data.error || "Storyforge request failed");
+  if (response.status === 401) throw new Error("Otherwise is not signed in on this device (no token). Ask Jonathan.");
+  if (!response.ok || data.ok === false || data.error) throw new Error(data.message || data.error || "Otherwise request failed");
   return data;
 }
 
@@ -255,7 +255,7 @@ function Page({ children, className = "", style }) {
 }
 
 function Wordmark({ small = false }) {
-  return <div className={`wordmark ${small ? "wordmark-small" : ""}`}>Storyforge</div>;
+  return <div className={`wordmark ${small ? "wordmark-small" : ""}`}>Otherwise</div>;
 }
 
 function Avatars({ ids, className = "" }) {
@@ -588,7 +588,7 @@ function UniverseDetail() {
         const blob = await response.blob();
         const file = new File([blob], fileName, { type: "application/pdf" });
         if (!navigator.canShare || navigator.canShare({ files: [file] })) {
-          await navigator.share({ title: story.title || "Storyforge Adventure", files: [file] });
+          await navigator.share({ title: story.title || "Otherwise Adventure", files: [file] });
           return;
         }
       } catch {
