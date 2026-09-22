@@ -1231,12 +1231,32 @@ function ChapterReader() {
     // has never heard of, so polling here invents a generation.
     if (!waiting?.chapterNumber || waiting.recording) return undefined;
     let cancelled = false;
+    let finished = false;
     const targetChapter = waiting.chapterNumber;
     const startedAt = waiting.startedAt || Date.now();
+    const kind = waiting.kind;
+    // Kept on `waiting` too, so Try Again after a timeout does not forget that
+    // the server already said it started.
+    let sawReshaping = Boolean(waiting.sawReshaping);
+    function showChapter(next) {
+      cacheChapter(`sf_chapter_cache_${storyId}`, next);
+      setChapter(next);
+      setChapterNumber(targetChapter);
+      setWaiting(null);
+      setReshapedPulse(kind === "reshape");
+      requestAnimationFrame(() => {
+        if (kind === "reshape" && reshapeAnchor?.index != null) {
+          document.querySelector(`[data-paragraph-index="${reshapeAnchor.index}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+        } else {
+          window.scrollTo(0, 0);
+        }
+      });
+      setTimeout(() => setReshapedPulse(false), 1800);
+    }
     async function poll() {
-      if (cancelled) return;
+      if (cancelled || finished) return;
       const elapsed = Date.now() - startedAt;
-      if (elapsed > 120000) {
+      if (elapsed > waitTimeoutMs(kind)) {
         setWaiting((current) => current?.chapterNumber === targetChapter ? { ...current, timedOut: true } : current);
         return;
       }
@@ -1245,27 +1265,29 @@ function ChapterReader() {
         : current);
       try {
         const status = await getChapterStatus(id, storyId, targetChapter);
-        if (cancelled) return;
-        if (status.status === "complete" && status.chapter) {
-          cacheChapter(`sf_chapter_cache_${storyId}`, status.chapter);
-          setChapter(status.chapter);
-          setChapterNumber(targetChapter);
-          setWaiting(null);
-          setReshapedPulse(waiting.kind === "reshape");
-          requestAnimationFrame(() => {
-            if (waiting.kind === "reshape" && reshapeAnchor?.index != null) {
-              document.querySelector(`[data-paragraph-index="${reshapeAnchor.index}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
-            } else {
-              window.scrollTo(0, 0);
-            }
-          });
-          setTimeout(() => setReshapedPulse(false), 1800);
-        } else if (status.status === "failed") {
+        if (cancelled || finished) return;
+        const step = chapterPollStep(kind, status, sawReshaping);
+        if (step.sawReshaping && !sawReshaping) {
+          sawReshaping = true;
+          setWaiting((current) => current?.chapterNumber === targetChapter ? { ...current, sawReshaping: true } : current);
+        }
+        if (step.action === "show") {
+          finished = true;
+          showChapter(status.chapter);
+        } else if (step.action === "reread") {
+          // The status route's `complete` carries the chapter, but a reshape is
+          // the one case where the text on screen is the thing being replaced:
+          // read it again, from the server, not the device cache.
+          finished = true;
+          const fresh = await execute("storyforge.chapter.get.v1", { tenantId: "core", userId: "jonathan", universeId: id, storyId, chapterNumber: targetChapter });
+          if (!cancelled) showChapter(fresh);
+        } else if (step.action === "failed") {
           setWaiting((current) => current?.chapterNumber === targetChapter
-            ? { ...current, failed: true, error: status.error || "Chapter generation failed." }
+            ? { ...current, failed: true, error: status.error || (kind === "reshape" ? "The change could not be written." : "Chapter generation failed.") }
             : current);
         }
       } catch (error) {
+        finished = false;
         if (!cancelled) {
           setWaiting((current) => current?.chapterNumber === targetChapter
             ? { ...current, error: error.message || "Could not check chapter status." }
@@ -1561,7 +1583,12 @@ function ChapterReader() {
       <WaitingState
         text={waiting.recording ? "Saving what you picked..." : waitMessages[waiting.messageIndex || 0]}
         timedOut={waiting.timedOut}
-        error={waiting.error}
+        timedOutText={waiting.kind === "reshape" ? "Your change is not on the page yet." : undefined}
+        error={waiting.timedOut && waiting.kind === "reshape" && !waiting.error
+          ? (waiting.sawReshaping
+            ? "The story server is still rewriting it. Nothing is lost. Try Again keeps waiting; it does not send the change twice."
+            : "The story server never said it started your change. It may not have arrived. Try Again keeps waiting; if nothing changes, send it again.")
+          : waiting.error}
         onRetry={() => setWaiting((current) => current ? { ...current, startedAt: Date.now(), timedOut: false, failed: false, error: "" } : current)}
       />
     );
@@ -3178,6 +3205,44 @@ async function getChapterStatus(universeId, storyId, chapterNumber) {
   return data;
 }
 
+export const CHAPTER_WAIT_TIMEOUT_MS = 120000;
+// A reshape rewrites a whole chapter from the intervention on. 2026-09-21 one
+// took two and a half minutes, past the chapter timeout.
+export const RESHAPE_WAIT_TIMEOUT_MS = 6 * 60 * 1000;
+
+export function waitTimeoutMs(kind) {
+  return kind === "reshape" ? RESHAPE_WAIT_TIMEOUT_MS : CHAPTER_WAIT_TIMEOUT_MS;
+}
+
+/** What one `chapter.status` answer means to the waiting screen.
+ *
+ * A reshape rewrites a chapter that already exists, so that chapter is
+ * already `complete` -- with the OLD text -- until the server has marked the
+ * reshape as running. `storyforge.chapter.reshape.v1` writes the queue item
+ * `{ type: "reshape", status: "reshaping" }`, and while it is there the status
+ * route answers `status: "reshaping"`. The poll starts the moment the tap
+ * lands, before that write, so on 2026-09-21 the first poll read `complete`,
+ * showed the old chapter and stopped; the edit landed 2.5 minutes later and
+ * the page never showed it. Nothing before `reshaping` is about this reshape:
+ * not `complete`, and not a `failed` left by an earlier one.
+ *
+ * Returns `{ action, sawReshaping }`, where action is "wait", "show" (use
+ * `status.chapter`), "reread" (fetch the chapter again) or "failed".
+ */
+export function chapterPollStep(kind, status, sawReshaping = false) {
+  const state = status?.status;
+  if (kind === "reshape") {
+    if (state === "reshaping") return { action: "wait", sawReshaping: true };
+    if (!sawReshaping) return { action: "wait", sawReshaping: false };
+    if (state === "complete") return { action: "reread", sawReshaping };
+    if (state === "failed") return { action: "failed", sawReshaping };
+    return { action: "wait", sawReshaping };
+  }
+  if (state === "complete" && status.chapter) return { action: "show", sawReshaping };
+  if (state === "failed") return { action: "failed", sawReshaping };
+  return { action: "wait", sawReshaping };
+}
+
 function cacheChapter(cacheKey, chapter) {
   if (!chapter?.chapterNumber) return;
   try {
@@ -3193,11 +3258,11 @@ function ReadingLoading({ text }) {
   return <Page className="waiting-page"><WaitingState text={text} /></Page>;
 }
 
-function WaitingState({ text, timedOut, error, onRetry }) {
+function WaitingState({ text, timedOut, timedOutText = "This is taking longer than expected.", error, onRetry }) {
   return (
     <div className="waiting">
       <div className="compass" />
-      <h1>{timedOut ? "This is taking longer than expected." : text}</h1>
+      <h1>{timedOut ? timedOutText : text}</h1>
       <p>{error || "The page is turning under a different sky."}</p>
       {timedOut && <button className="gold-button waiting-retry" onClick={onRetry}>Try Again</button>}
     </div>
