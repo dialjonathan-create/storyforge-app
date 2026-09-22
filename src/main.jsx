@@ -2419,20 +2419,35 @@ function choicePrompt(readers) {
   return "What happens next?";
 }
 
-/** Publish the keyboard's height as `--keyboard-inset` while a sheet is open.
+/** Pin an open sheet to the part of the screen the reader can actually see.
  *
  * iOS Safari does not move the LAYOUT viewport for the keyboard, so a
- * `position: fixed` sheet stays exactly where it was and the keyboard covers
- * it. `visualViewport` is the only API that reports the actually-visible area.
- * Everywhere else this measures 0 and the `dvh` unit alone is enough.
+ * `position: fixed` sheet stays where it was and the keyboard covers it.
+ * `visualViewport` is the only API that reports the actually-visible box, so
+ * its top and height are published as `--vv-top` / `--vv-height` and the chat
+ * sheet is positioned INTO that box (2026-09-16), rather than padded by a
+ * keyboard height computed against a layout viewport iOS may also have scrolled.
+ *
+ * Measured in the iOS 26.5 Simulator (iPhone 17e, 390pt), Safari tab and
+ * home-screen web app: visualViewport.height already stops above the floating
+ * form-assistant pill (⌃ ⌄ ✓), so no extra clearance is added for it. What the
+ * box positioning changes there: the sheet's header no longer scrolls off the
+ * top when iOS scrolls the layout viewport to the focused field.
  */
+const KEYBOARD_OPEN_THRESHOLD_PX = 120;
+
 function useKeyboardInset(active) {
   useEffect(() => {
     const vv = typeof window !== "undefined" ? window.visualViewport : null;
     if (!active || !vv) return undefined;
+    const root = document.documentElement;
     const apply = () => {
-      const inset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-      document.documentElement.style.setProperty("--keyboard-inset", `${Math.round(inset)}px`);
+      const keyboard = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      const open = keyboard > KEYBOARD_OPEN_THRESHOLD_PX;
+      root.style.setProperty("--keyboard-inset", `${Math.round(keyboard)}px`);
+      root.style.setProperty("--vv-top", `${Math.round(vv.offsetTop)}px`);
+      root.style.setProperty("--vv-height", `${Math.round(vv.height)}px`);
+      root.classList.toggle("keyboard-open", open);
     };
     apply();
     vv.addEventListener("resize", apply);
@@ -2440,7 +2455,8 @@ function useKeyboardInset(active) {
     return () => {
       vv.removeEventListener("resize", apply);
       vv.removeEventListener("scroll", apply);
-      document.documentElement.style.removeProperty("--keyboard-inset");
+      for (const name of ["--keyboard-inset", "--vv-top", "--vv-height"]) root.style.removeProperty(name);
+      root.classList.remove("keyboard-open");
     };
   }, [active]);
 }
@@ -2616,7 +2632,7 @@ function StoryChatSheet({ thread, busy, onSend, onClose, onApprove, onDismiss, o
   useKeyboardInset(Boolean(thread));
   if (!thread) return null;
   return (
-    <motion.div className="bottom-sheet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+    <motion.div className="bottom-sheet chat-bottom-sheet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <button className="sheet-shade" onClick={onClose} />
       <motion.section className="sheet-panel chat-sheet" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}>
         <h2>Talk to the story</h2>
