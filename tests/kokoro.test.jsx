@@ -1,7 +1,16 @@
-import { describe, it, expect, vi } from "vitest";
-import { fetchVoices, synthesize } from "../src/kokoro";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { fetchVoices, synthesize, resetKokoroTokenForTests } from "../src/kokoro";
 
 describe("Kokoro API", () => {
+  // Endpoint fallback and voices, without the token step (kokoroToken.test.jsx
+  // covers that): no Storyforge token, so nothing is minted.
+  beforeEach(() => {
+    vi.stubEnv("VITE_STORYFORGE_TOKEN", "");
+    localStorage.removeItem("storyforge_token");
+    resetKokoroTokenForTests();
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
   it("fetches voices or uses fallback", async () => {
     global.fetch = vi.fn().mockResolvedValueOnce({
       ok: false
