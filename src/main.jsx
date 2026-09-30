@@ -63,6 +63,152 @@ function userFor(id, users = FAMILY) {
   return users.find((u) => u.userId === id) || FAMILY.find((u) => u.userId === id) || { userId: id, displayName: id, avatar: "✦" };
 }
 
+// ── Who reads a story, and who is reading tonight ─────────────────────────
+//
+// 2026-09-29. A story has readers -- any subset of the family -- and each
+// chapter is written for whoever is actually reading it that night (supervisor:
+// `readingNow`). Chapter 5 may be Jonathan & Keen, chapter 6 Keen alone. The
+// selection is remembered per story in memory here AND on the server
+// (`storyforge.story.reading_now.set.v1`), so the phone, the web and the story's
+// conversation all open on the same answer.
+const AbilityCommandReadingNowSet = "storyforge.story.reading_now.set.v1";
+const AbilityCommandReadersUpdate = "storyforge.story.readers.update.v1";
+const FAMILY_IDS = FAMILY.map((u) => u.userId);
+
+/** Family order (jonathan, adele, keen, talia); unknown ids and repeats dropped. */
+export function orderedReaders(ids) {
+  const wanted = new Set((Array.isArray(ids) ? ids : String(ids || "").split(/[&,\s]+/))
+    .map((x) => String(x || "").trim().toLowerCase()).filter(Boolean));
+  return FAMILY_IDS.filter((id) => wanted.has(id));
+}
+
+/** "Keen", "Jonathan & Keen", "Jonathan, Adele & Keen". */
+export function readersSentence(ids, users = FAMILY) {
+  const names = orderedReaders(ids).map((id) => userFor(id, users).displayName);
+  if (names.length <= 2) return names.join(" & ");
+  return `${names.slice(0, -1).join(", ")} & ${names[names.length - 1]}`;
+}
+
+const readingNowMemory = new Map();
+
+export function rememberReadingNow(storyId, ids) {
+  if (storyId) readingNowMemory.set(storyId, orderedReaders(ids));
+}
+
+export function forgetReadingNowMemory() {
+  readingNowMemory.clear();
+}
+
+/** Who a story's next chapter is for, before anybody taps: what was chosen
+ *  last on this device this session, else what the server remembers, else all
+ *  of the story's readers. Always a subset of the story's readers. */
+export function initialReadingNow(story, fallback = []) {
+  const readers = orderedReaders(story?.primaryReaders || []);
+  const pool = readers.length ? readers : orderedReaders(fallback);
+  const inPool = (ids) => orderedReaders(ids).filter((id) => pool.includes(id));
+  const remembered = inPool(readingNowMemory.get(story?.storyId) || []);
+  if (remembered.length) return remembered;
+  const stored = inPool(story?.readingNow || []);
+  if (stored.length) return stored;
+  return pool;
+}
+
+/** Tap a chip: in or out. The last reader cannot be tapped out -- somebody is
+ *  always reading. */
+export function toggleReader(selected, id) {
+  const current = orderedReaders(selected);
+  if (current.includes(id)) {
+    const next = current.filter((x) => x !== id);
+    return next.length ? next : current;
+  }
+  return orderedReaders([...current, id]);
+}
+
+/** Avatar chips for any set of the family. Multi-select; a long press (or right
+ *  click) on a chip selects only that reader. */
+export function ReaderChips({ options = FAMILY_IDS, selected = [], onChange, onOnly, users = FAMILY, label, className = "" }) {
+  const holdTimer = useRef(null);
+  const held = useRef(false);
+  const chosen = orderedReaders(selected);
+  function startHold(id) {
+    held.current = false;
+    if (!onOnly) return;
+    clearTimeout(holdTimer.current);
+    holdTimer.current = setTimeout(() => { held.current = true; onOnly(id); }, 550);
+  }
+  function endHold() {
+    clearTimeout(holdTimer.current);
+  }
+  return (
+    <div className={`reader-chips ${className}`} role="group" aria-label={label || "Readers"}>
+      {orderedReaders(options).map((id) => {
+        const user = userFor(id, users);
+        const on = chosen.includes(id);
+        return (
+          <button
+            key={id}
+            type="button"
+            className={`reader-chip ${on ? "selected" : ""}`}
+            aria-pressed={on}
+            onPointerDown={() => startHold(id)}
+            onPointerUp={endHold}
+            onPointerLeave={endHold}
+            onContextMenu={(event) => { if (onOnly) { event.preventDefault(); held.current = true; onOnly(id); } }}
+            onClick={() => {
+              if (held.current) { held.current = false; return; }
+              onChange?.(toggleReader(chosen, id));
+            }}
+          >
+            <span className="reader-chip-avatar" aria-hidden="true">{user.avatar}</span>
+            <span className="reader-chip-name">{user.displayName}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** "Who's reading?" -- the story's readers, all pre-selected by default, one tap
+ *  to take someone out. Shown only when there is a choice to make: a story with
+ *  one reader has nobody to leave out. One tap from "together" to "just Keen":
+ *  with two readers, tap the other one; with more, the "Just <child>" shortcut. */
+export function WhosReading({ readers, selected, onChange, users = FAMILY }) {
+  const pool = orderedReaders(readers);
+  if (pool.length < 2) return null;
+  const chosen = orderedReaders(selected).filter((id) => pool.includes(id));
+  const everyone = chosen.length === pool.length;
+  const shortcuts = pool.length > 2
+    ? pool.filter((id) => ["keen", "talia"].includes(id) && !(chosen.length === 1 && chosen[0] === id))
+    : [];
+  return (
+    <section className="whos-reading" aria-label="Who's reading?">
+      <div className="whos-reading-label">Who's reading?</div>
+      <ReaderChips options={pool} selected={chosen} users={users} label="Who's reading?" onChange={onChange} onOnly={(id) => onChange([id])} />
+      <div className="whos-reading-shortcuts">
+        {!everyone && <button type="button" className="reader-shortcut" onClick={() => onChange(pool)}>Everyone</button>}
+        {shortcuts.map((id) => (
+          <button key={id} type="button" className="reader-shortcut" onClick={() => onChange([id])}>
+            Just {userFor(id, users).displayName}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** "Written for Jonathan & Keen", from the chapter's own record. Chapters from
+ *  before readingNow existed say nothing rather than guess. */
+export function WrittenFor({ chapter, users = FAMILY }) {
+  const ids = orderedReaders(chapter?.readingNow || []);
+  if (!ids.length) return null;
+  return (
+    <div className="written-for">
+      <span className="avatars" aria-hidden="true">{ids.map((id) => <span key={id}>{userFor(id, users).avatar}</span>)}</span>
+      <span>Written for {readersSentence(ids, users)}</span>
+    </div>
+  );
+}
+
 // Genre is FREE TEXT, deliberately, and these are suggestions rather than
 // options. `_missing_creation_metadata` in the engine checks only that the
 // value is non-empty after str().strip() -- there is no enum, no allowlist and
@@ -488,6 +634,10 @@ function UniverseDetail() {
   const [editAudience, setEditAudience] = useState("");
   const [savingMeta, setSavingMeta] = useState(false);
   const [metaError, setMetaError] = useState("");
+  const [readersStory, setReadersStory] = useState(null);
+  const [editReaders, setEditReaders] = useState([]);
+  const [savingReaders, setSavingReaders] = useState(false);
+  const [readersError, setReadersError] = useState("");
   const [confirmStory, setConfirmStory] = useState(null);
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -550,6 +700,40 @@ function UniverseDetail() {
       setMetaError(err.message || "Could not save.");
     } finally {
       setSavingMeta(false);
+    }
+  }
+
+  function openReadersEditor(story) {
+    setMenuStoryId(null);
+    setReadersError("");
+    setEditReaders(orderedReaders(story.primaryReaders || []).length ? orderedReaders(story.primaryReaders) : orderedReaders(activeReaders));
+    setReadersStory(story);
+  }
+
+  async function saveReaders() {
+    if (!readersStory?.storyId || !editReaders.length) return;
+    setSavingReaders(true);
+    setReadersError("");
+    try {
+      const res = await execute(AbilityCommandReadersUpdate, {
+        tenantId: "core",
+        userId: "jonathan",
+        universeId: id,
+        storyId: readersStory.storyId,
+        primaryReaders: editReaders,
+      });
+      // What the server stored, not what was sent.
+      const stored = orderedReaders(res.primaryReaders || []);
+      setStories((items) => (items || []).map((item) => (
+        item.storyId === readersStory.storyId
+          ? { ...item, primaryReaders: stored, readingNow: orderedReaders(res.readingNow || stored) }
+          : item
+      )));
+      setReadersStory(null);
+    } catch (err) {
+      setReadersError(err.message || "Could not save the readers.");
+    } finally {
+      setSavingReaders(false);
     }
   }
 
@@ -692,6 +876,9 @@ function UniverseDetail() {
                             <button type="button" onClick={() => openMetaEditor(story)}>
                               Edit Genre &amp; Audience
                             </button>
+                            <button type="button" onClick={() => openReadersEditor(story)}>
+                              Who reads this story
+                            </button>
                             <button type="button" className="danger-action" onClick={() => { setDeleteError(""); setConfirmStory(story); }}>
                               Delete Story
                             </button>
@@ -742,6 +929,33 @@ function UniverseDetail() {
         busy={deleting}
         error={deleteError}
       />
+      <AnimatePresence>
+        {readersStory && (
+          <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <button className="modal-shade" type="button" aria-label="Cancel" onClick={() => { if (!savingReaders) setReadersStory(null); }} />
+            <motion.section
+              className="confirm-modal meta-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label={`Who reads ${readersStory.title}`}
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 12 }}
+              transition={{ duration: 0.2 }}
+            >
+              <h2>{readersStory.title}</h2>
+              <div className="field-label">Who reads this story?</div>
+              <ReaderChips selected={editReaders} onChange={setEditReaders} label="Who reads this story?" />
+              <p className="muted">Each chapter is written for whoever is reading it that night.</p>
+              {readersError && <div className="inline-error">{readersError}</div>}
+              <div className="modal-actions">
+                <button type="button" className="outline-button" disabled={savingReaders} onClick={() => setReadersStory(null)}>Cancel</button>
+                <button type="button" className="gold-button" disabled={savingReaders || !editReaders.length} onClick={saveReaders}>{savingReaders ? "Saving..." : "Save"}</button>
+              </div>
+            </motion.section>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <AnimatePresence>
         {editMetaStory && (
           <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
@@ -1006,6 +1220,20 @@ function LoreSection({ title, children }) {
   return <section className="lore-section"><h2>{title}</h2>{list}</section>;
 }
 
+// A server from before readingNow refuses an argument it does not know
+// ("does not take readingNow") and types chosenBy as one string. The pick must
+// still be saved, so that refusal -- and only that one -- is retried the old way.
+const LEGACY_CHOICE_REFUSAL = /does not take|Invalid type for chosenBy|unknown_argument/i;
+
+export async function recordChoiceWithReaders(base, readersNow, fallbackReader, run = execute) {
+  try {
+    return await run("storyforge.choice.record.v1", { ...base, chosenBy: readersNow, readingNow: readersNow });
+  } catch (error) {
+    if (!LEGACY_CHOICE_REFUSAL.test(String(error?.message || ""))) throw error;
+    return run("storyforge.choice.record.v1", { ...base, madeBy: readersNow.length === 1 ? readersNow[0] : fallbackReader });
+  }
+}
+
 function ChapterReader() {
   const { id, storyId } = useParams();
   const nav = useNavigate();
@@ -1067,6 +1295,25 @@ function ChapterReader() {
   }
   const [defineWord, setDefineWord] = useState(null);
   const tier = tierForReaders(activeReaders);
+  // Who the next chapter is for. Set from the story once it loads; see
+  // initialReadingNow for where the default comes from.
+  const [readingNow, setReadingNow] = useState([]);
+  const storyReaders = orderedReaders(story?.primaryReaders || []).length
+    ? orderedReaders(story.primaryReaders)
+    : orderedReaders(activeReaders);
+  function changeReadingNow(ids) {
+    const next = orderedReaders(ids).filter((reader) => storyReaders.includes(reader));
+    if (!next.length) return;
+    setReadingNow(next);
+    rememberReadingNow(storyId, next);
+    // Remembered on the server too, so the phone and the story's conversation
+    // open on the same answer. Best-effort: the next chapter call carries
+    // readingNow anyway, so a failure here costs nothing tonight.
+    if (orderedReaders(story?.primaryReaders || []).length) {
+      execute(AbilityCommandReadingNowSet, { tenantId: "core", userId: "jonathan", universeId: id, storyId, readingNow: next })
+        .catch(() => {});
+    }
+  }
 
   function saveBookmarkHere() {
     if (!chapter) return;
@@ -1101,6 +1348,7 @@ function ChapterReader() {
           total
         );
         setStory(loadedStory);
+        setReadingNow(initialReadingNow(loadedStory, activeReaders));
         setCurrentStory(found);
         setChapterNumber(target);
       })
@@ -1111,6 +1359,7 @@ function ChapterReader() {
         const landingChapter = bookmark?.chapterNumber || saved.chapter || 1;
         const fallbackStory = { storyId, title: "Story", totalChapters: landingChapter, currentChapter: landingChapter };
         setStory(fallbackStory);
+        setReadingNow(initialReadingNow(fallbackStory, activeReaders));
         setCurrentStory(null);
         setChapterNumber(landingChapter);
       });
@@ -1332,7 +1581,7 @@ function ChapterReader() {
     setWriteError(null);
     setWaiting({ chapterNumber: nextChapter, startedAt: Date.now(), messageIndex: 0, recording: true });
     try {
-      const res = await execute("storyforge.choice.record.v1", {
+      const base = {
         tenantId: "core",
         userId: "jonathan",
         universeId: id,
@@ -1340,15 +1589,20 @@ function ChapterReader() {
         chapterNumber,
         choiceId: String(choice.id || ""),
         choiceText,
-        madeBy: activeReaders[0] || "jonathan",
         protagonistId: readingGroup,
         protagonistGroup: activeReaders.length > 1 ? readingGroup : null,
-      });
+      };
+      // The people reading made the choice, together; the next chapter is
+      // written for them.
+      const readersNow = orderedReaders(readingNow);
+      const res = readersNow.length
+        ? await recordChoiceWithReaders(base, readersNow, activeReaders[0] || "jonathan")
+        : await execute("storyforge.choice.record.v1", { ...base, madeBy: activeReaders[0] || "jonathan" });
       if (heldForRequest(res)) {
         const pending = {
           chapterNumber: Number(res?.chapterNumber) || nextChapter,
           choiceText,
-          madeBy: activeReaders[0] || "jonathan",
+          madeBy: res?.madeBy || activeReaders[0] || "jonathan",
           narratorOnly: res?.status === "awaiting_narrator" || res?.awaitingNarrator === true,
           recordedAt: Date.now(),
         };
@@ -1377,6 +1631,7 @@ function ChapterReader() {
         storyId,
         chapterNumber: target,
         requestedBy: activeReaders[0] || "jonathan",
+        ...(orderedReaders(readingNow).length ? { readingNow: orderedReaders(readingNow) } : {}),
       });
       setPendingWrite(null);
       writePendingWrite(storyId, null);
@@ -1467,6 +1722,16 @@ function ChapterReader() {
         requestedBy: activeReaders[0] || "jonathan",
       });
       const kind = res.responseType || "conversation";
+      // "Just Keen tonight" said to the story changes who the next chapter is
+      // for; the row above the choices follows it.
+      if (kind === "reading_now_updated" && Array.isArray(res.readingNow) && res.readingNow.length) {
+        const next = orderedReaders(res.readingNow);
+        setReadingNow(next);
+        rememberReadingNow(storyId, next);
+        if (Array.isArray(res.storyState?.storyReaders) && res.storyState.storyReaders.length) {
+          setStory((current) => current ? { ...current, primaryReaders: res.storyState.storyReaders, readingNow: next } : current);
+        }
+      }
       // converse.v1 returns its prose under `message` (read from the handler's
       // return statement 2026-08-30, after shipping `res.response` unverified
       // and turning every reply into "(the story had no words)").
@@ -1626,6 +1891,7 @@ function ChapterReader() {
       <motion.article initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }} className="reading-column">
         <div className="chapter-kicker">Chapter {chapter.chapterNumber}</div>
         <h1>{chapter.chapterTitle}</h1>
+        <WrittenFor chapter={chapter} users={users} />
         <div className="gold-divider" />
         <NarrationPanel chapter={chapter} voiceId={voice} />
         <ChapterImages chapter={chapter} tier={tier} onHeroLoad={() => setProseReady(true)} />
@@ -1649,9 +1915,16 @@ function ChapterReader() {
             error={writeError?.text}
             detail={writeError?.detail}
             onWrite={requestChapter}
-          />
+          >
+            <WhosReading readers={storyReaders} selected={readingNow} onChange={changeReadingNow} users={users} />
+          </WriteNextChapterCard>
         ) : (
-          <ChoicePanel visible={choicesVisible} chapter={chapter} readers={activeReaders} onChoose={choose} showTooltip={showChoiceTooltip} onDismissTooltip={() => setShowChoiceTooltip(false)} />
+          <>
+            {choicesVisible && chapter?.choices?.length > 0 && !chapter.choiceMade && (
+              <WhosReading readers={storyReaders} selected={readingNow} onChange={changeReadingNow} users={users} />
+            )}
+            <ChoicePanel visible={choicesVisible} chapter={chapter} readers={orderedReaders(readingNow).length ? readingNow : activeReaders} onChoose={choose} showTooltip={showChoiceTooltip} onDismissTooltip={() => setShowChoiceTooltip(false)} />
+          </>
         )}
         {/* 2026-09-13: the talk bar is gone. It opened the same StoryChatSheet
             the 💬 in the header opens, and it sat there permanently taking a
@@ -2329,13 +2602,14 @@ function ChoicesProposalCard({ proposal, busy, onApprove, onDismiss }) {
  * have tapped this, because this is not on the screen until the choice is
  * already recorded and the choices are gone.
  */
-function WriteNextChapterCard({ pending, busy, error, detail, onWrite }) {
+function WriteNextChapterCard({ pending, busy, error, detail, onWrite, children }) {
   if (!pending?.chapterNumber) return null;
   const n = pending.chapterNumber;
   return (
     <section className="proposal-card write-chapter-card" aria-label={`Write chapter ${n}`}>
       <div className="proposal-kicker">Chapter {n} is not written yet</div>
       {pending.choiceText && <p className="write-chapter-pick">You picked: “{pending.choiceText}”</p>}
+      {!pending.narratorOnly && children}
       {pending.narratorOnly ? (
         <p className="proposal-note">A grown-up has to ask for chapter {n}. Your pick is saved until then.</p>
       ) : (
@@ -3379,6 +3653,8 @@ function NewStory() {
   // stored instead of silently substituting a literal.
   const [genre, setGenre] = useState("");
   const [audience, setAudience] = useState("");
+  // Who the story is for: whoever is reading now, changeable before it exists.
+  const [storyReaders, setStoryReaders] = useState(() => orderedReaders(activeReaders).length ? orderedReaders(activeReaders) : ["jonathan"]);
   const [metaError, setMetaError] = useState("");
   // `step` means two different things in this component: for the adult flow it
   // is a screen (1 describe, 2 answer, 3 waiting), and for the young flow it is
@@ -3444,7 +3720,10 @@ function NewStory() {
         userId: activeReaders[0] || "jonathan",
         universeId: id,
         title: inferTitle(seedDescription),
-        primaryReaders: activeReaders,
+        // `readers` is the name the server validates; primaryReaders is what a
+        // server from before it reads. Same list.
+        readers: storyReaders,
+        primaryReaders: storyReaders,
         genre: genreValue,
         audienceAge: audienceValue,
         isSpinoff: false,
@@ -3537,6 +3816,8 @@ function NewStory() {
             placeholder="child, adult, anything"
             required
           />
+          <div className="field-label">Who reads this story?</div>
+          <ReaderChips selected={storyReaders} onChange={setStoryReaders} label="Who reads this story?" />
           {metaError && <div className="inline-error">{metaError}</div>}
           <button className="gold-button fixed-bottom" onClick={createStory}>Create Story →</button>
         </section>
