@@ -2200,3 +2200,106 @@ h3 {
   color: var(--gold-light, #e3c893);
 }
 
+
+/* ── Readers: who a story is for, and who is reading tonight ─────────────── */
+.field-label {
+  margin: 18px 0 8px;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+}
+
+.reader-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reader-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 6px 14px 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.95rem;
+  opacity: 0.6;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.reader-chip.selected {
+  border-color: var(--gold-light);
+  color: var(--text-primary);
+  opacity: 1;
+  box-shadow: 0 0 0 1px var(--gold-dim) inset;
+}
+
+.reader-chip-avatar {
+  font-size: 1.2rem;
+}
+
+.whos-reading {
+  margin-top: 36px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.write-chapter-card .whos-reading {
+  margin: 12px 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.whos-reading-label {
+  margin-bottom: 10px;
+  color: var(--gold-light);
+  font-family: Cinzel, Georgia, serif;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.whos-reading .reader-chips {
+  justify-content: center;
+}
+
+.whos-reading-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.whos-reading-shortcuts:empty {
+  display: none;
+}
+
+.reader-shortcut {
+  min-height: 36px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--gold-light);
+  font: inherit;
+  font-size: 0.88rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.written-for {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
