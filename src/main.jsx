@@ -6,6 +6,8 @@ import "./styles.css";
 import NarrationPanel from "./NarrationPanel";
 import { fetchVoices } from "./kokoro";
 import StoryMap, { mappablePlaces } from "./StoryMap";
+import { configureAuth, currentSession, hasSessionFor, installSessionFetch, SIGNED_OUT_EVENT } from "./auth";
+import { SignInSheet } from "./SignIn";
 
 // The build this browser is actually running, for when "did it deploy?" is
 // asked from a phone rather than from gcloud. Also served as /version.json.
@@ -28,14 +30,16 @@ const AbilityCommandConversationList = "storyforge.conversation.list.v1";
 // a chapter nobody asked for. This is the second tap.
 const AbilityCommandChapterRequest = "storyforge.chapter.request.v1";
 const ABILITY_URL = import.meta.env.VITE_ABILITY_URL || "https://ability-supervisor-service-818269465014.us-central1.run.app";
-// Scoped product token (2026-08-22): authorizes story.* / storyforge.* only.
-const STORYFORGE_TOKEN =
-  (typeof localStorage !== "undefined" && localStorage.getItem("storyforge_token")) ||
-  import.meta.env.VITE_STORYFORGE_TOKEN || "";
+// No token is compiled into this app any more (Otherwise QA O-01, 2026-10-06):
+// the shared VITE_STORYFORGE_TOKEN was readable by anyone who loaded the page.
+// Every call to ABILITY_URL is signed by the signed-in reader's own session,
+// added by the fetch wrapper in ./auth.js -- see SignIn.jsx for how a reader
+// signs in. `requestedBy` below is a hint for old servers; the server ignores
+// it and uses the session.
+configureAuth({ abilityUrl: ABILITY_URL });
+if (typeof window !== "undefined") installSessionFetch();
 function abilityHeaders(extra = {}) {
-  const headers = { ...extra };
-  if (STORYFORGE_TOKEN) headers.Authorization = `Bearer ${STORYFORGE_TOKEN}`;
-  return headers;
+  return { ...extra };
 }
 const FAMILY = [
   { userId: "jonathan", displayName: "Jonathan", avatar: "⚓" },
@@ -409,11 +413,14 @@ function Avatars({ ids, className = "" }) {
   return <span className={`avatars ${className}`}>{(ids || []).map((id) => <span key={id}>{userFor(id, users).avatar}</span>)}</span>;
 }
 
-function ReaderPicker() {
+export function ReaderPicker() {
   const nav = useNavigate();
   const { users, setUsers, activeReaders, setActiveReaders } = useApp();
   const [pending, setPending] = useState(activeReaders);
   useEffect(() => {
+    // Nobody signed in yet: the family's names are already here, and the server
+    // would only answer "sign in first".
+    if (!currentSession()) return;
     execute("storyforge.user.list.v1", { tenantId: "core", userId: "jonathan" })
       .then((res) => setUsers(res.users || FAMILY))
       .catch(() => setUsers(FAMILY));
@@ -429,9 +436,22 @@ function ReaderPicker() {
     setPending((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id].sort());
   }
 
+  const [signingIn, setSigningIn] = useState(null);
+
+  // The first reader in the group is who the server will believe is asking
+  // (alphabetical: a group with a grown-up in it is that grown-up). That
+  // person has to be signed in -- a grown-up with their PIN -- or nothing opens.
   function start() {
     if (!pending.length) return;
     const next = [...pending].sort();
+    if (!hasSessionFor(next[0])) {
+      setSigningIn(next[0]);
+      return;
+    }
+    proceed(next);
+  }
+
+  function proceed(next) {
     localStorage.setItem("storyforge_reading_group", JSON.stringify(next));
     if (next.length === 1) localStorage.setItem("storyforge_default_reader", next[0]);
     else localStorage.removeItem("storyforge_default_reader");
@@ -474,6 +494,14 @@ function ReaderPicker() {
           </motion.button>
         </AnimatePresence>
       </section>
+      {signingIn && (
+        <SignInSheet
+          who={signingIn}
+          users={users}
+          onDone={() => { setSigningIn(null); proceed([...pending].sort()); }}
+          onCancel={() => setSigningIn(null)}
+        />
+      )}
     </Page>
   );
 }
@@ -481,8 +509,34 @@ function ReaderPicker() {
 function Home() {
   const { activeReaders } = useApp();
   const defaultReader = localStorage.getItem("storyforge_default_reader");
-  if (defaultReader && activeReaders.length === 1) return <Navigate to="/universes" replace />;
+  if (defaultReader && activeReaders.length === 1 && hasSessionFor(activeReaders[0])) {
+    return <Navigate to="/universes" replace />;
+  }
   return <ReaderPicker />;
+}
+
+/** Back to "Who's reading?" whenever nobody -- or the wrong person -- is signed in:
+ *  a session that ended (idle grown-up, removed device), or a stored reading
+ *  group whose first reader is not the person the server knows. */
+function SessionWatcher() {
+  const nav = useNavigate();
+  const location = useLocation();
+  const { activeReaders } = useApp();
+  useEffect(() => {
+    const out = () => {
+      localStorage.removeItem("storyforge_default_reader");
+      nav("/", { replace: true });
+    };
+    window.addEventListener(SIGNED_OUT_EVENT, out);
+    return () => window.removeEventListener(SIGNED_OUT_EVENT, out);
+  }, [nav]);
+  useEffect(() => {
+    if (location.pathname === "/") return;
+    const session = currentSession();
+    const who = [...(activeReaders || [])].sort()[0];
+    if (!session || !who || session.userId !== who) nav("/", { replace: true });
+  }, [location.pathname, activeReaders, nav]);
+  return null;
 }
 
 function AppHeader({ backTo, title, right }) {
@@ -4318,6 +4372,7 @@ function Root() {
   return (
     <BrowserRouter>
       <AppProvider>
+        <SessionWatcher />
         {/* The outermost net. Nothing below this can blank the app: the worst
             case is one screen replaced by a message and a way back. */}
         <RoutedBoundary>

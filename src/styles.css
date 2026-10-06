@@ -192,6 +192,74 @@ h3 {
   font-size: 1.05rem;
 }
 
+/* Sign-in sheet (Otherwise QA O-01): a grown-up's PIN, or setting up the device. */
+.signin-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(5, 10, 16, 0.72);
+}
+
+.signin-sheet {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 14px;
+  padding: 24px 20px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+  color: var(--text-primary);
+}
+
+.signin-sheet h2 {
+  margin: 0;
+  font-family: Cinzel, Georgia, serif;
+  font-size: 1.2rem;
+}
+
+.signin-form {
+  display: grid;
+  gap: 12px;
+}
+
+.signin-label,
+.signin-note {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.signin-pin {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-size: 1.4rem;
+  letter-spacing: 0.4em;
+  text-align: center;
+}
+
+.signin-grownups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.signin-error {
+  margin: 0;
+  color: #e8a598;
+}
+
+.signin-cancel {
+  justify-self: center;
+}
+
 .gold-button,
 .outline-button,
 .inline-button,
