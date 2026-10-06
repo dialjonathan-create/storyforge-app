@@ -67,6 +67,24 @@ export default function NarrationPanel({ chapter, voiceId }) {
   const abortControllers = useRef(new Set());
   const playRunRef = useRef(0);
 
+  // Leaving the reader stops the voice. Without this the audio element kept
+  // playing and the prefetch kept asking Kokoro for paragraphs after Back
+  // (QA O-27, 2026-10-06). Refs only: state setters on an unmounted panel are
+  // pointless.
+  useEffect(() => () => {
+    playRunRef.current += 1;
+    isPlayingRef.current = false;
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current.onended = null;
+      currentAudioRef.current = null;
+    }
+    prefetchCache.current.forEach((url) => { if (typeof url === "string" && url.startsWith("blob:")) URL.revokeObjectURL(url); });
+    prefetchCache.current.clear();
+    abortControllers.current.forEach((c) => c.abort());
+    abortControllers.current.clear();
+  }, []);
+
   // Initialization
   useEffect(() => {
     let cancelled = false;
@@ -296,7 +314,8 @@ export default function NarrationPanel({ chapter, voiceId }) {
 
       {isPlaying && (
         <button type="button" onClick={() => { stop(); setCurrentIdx(0); }} className="narration-stop" aria-label="Stop narration">
-          <span aria-hidden="true">\u25A0</span>
+          {/* In braces: a bare \u25A0 in JSX text is printed literally (QA O-15). */}
+          <span aria-hidden="true">{"\u25A0"}</span>
         </button>
       )}
 

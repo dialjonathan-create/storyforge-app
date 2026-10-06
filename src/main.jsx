@@ -345,16 +345,89 @@ export function getCurrentReaderId() {
   return currentReaderId;
 }
 
+/** A failed call, with what kind of failure it was.
+ *
+ * `message` stays the server's own words (callers match on them); `network`
+ * says the server was never reached, `code` is the server's error code and
+ * `errorId` the invocation id a grown-up can quote. QA O-10 (2026-10-06): a
+ * network failure and an empty answer looked the same, so a library on bad
+ * wifi said "No universes yet. Create your first world."
+ */
+export class StoryRequestError extends Error {
+  constructor(message, { code = "", status = 0, network = false, errorId = "" } = {}) {
+    super(message);
+    this.name = "StoryRequestError";
+    this.code = code;
+    this.status = status;
+    this.network = network;
+    this.errorId = errorId;
+  }
+}
+
+const ERROR_ID_RE = /\b(inv_[0-9a-f-]{8,})/i;
+
+export function errorIdOf(data, message = "") {
+  const direct = data && (data.invocationId || data.errorId);
+  if (direct) return String(direct);
+  const match = String(message || "").match(ERROR_ID_RE);
+  return match ? match[1] : "";
+}
+
+/** What to show a child for a failed call: a sentence, and an id to quote.
+ *
+ * QA P2 (2026-10-06): raw codes and exceptions reached the screen --
+ * "Invalid type for protagonistGroup: expected str, got NoneType. Call form:
+ * ...", "FORBIDDEN_FOR_SCOPE", "Execution failed for capability ...
+ * invocationId=...". The server's words stay on the error object for whoever
+ * fixes it; the screen gets a sentence.
+ */
+export function friendlyError(error, fallback = "Something went wrong. Try again in a minute.") {
+  const raw = String(error?.message || error || "").trim();
+  const errorId = error?.errorId || errorIdOf(null, raw);
+  if (error?.network) return { text: "Couldn't reach the story server. Check the wifi, then try again.", errorId: "" };
+  if (/not signed in/i.test(raw)) return { text: raw, errorId: "" };
+  if (/forbidden/i.test(raw) || error?.status === 403) return { text: "This story isn't open to this reader.", errorId };
+  if (/busy right now|try again in a minute/i.test(raw) && raw.length < 160 && !/[{}=]|invocationId|capability/i.test(raw)) {
+    return { text: raw, errorId };
+  }
+  const technical = !raw
+    || /^[A-Za-z_]+$/.test(raw)
+    || /invocationId|receiptId|Call form:|Invalid type for|Missing required field|Execution failed|Traceback|NoneType|capability|\.v1\b|[{}]/i.test(raw);
+  if (technical) return { text: fallback, errorId };
+  return { text: raw, errorId };
+}
+
+/** One line for the screen: the sentence, and the id small after it. */
+export function friendlyErrorText(error, fallback) {
+  const { text, errorId } = friendlyError(error, fallback);
+  return errorId ? `${text} (Error ${errorId.slice(0, 12)})` : text;
+}
+
 async function execute(command, args = {}) {
-  const response = await fetch(`${ABILITY_URL}/v1/execute`, {
-    method: "POST",
-    headers: abilityHeaders({ "Content-Type": "application/json" }),
-    // requestedBy first so an explicit one from the caller overrides it.
-    body: JSON.stringify({ command, args: { requestedBy: currentReaderId, ...args } }),
-  });
+  let response;
+  try {
+    response = await fetch(`${ABILITY_URL}/v1/execute`, {
+      method: "POST",
+      headers: abilityHeaders({ "Content-Type": "application/json" }),
+      // requestedBy first so an explicit one from the caller overrides it.
+      body: JSON.stringify({ command, args: { requestedBy: currentReaderId, ...args } }),
+    });
+  } catch (error) {
+    throw new StoryRequestError("Couldn't reach the story server.", { network: true });
+  }
   const data = await response.json().catch(() => ({}));
-  if (response.status === 401) throw new Error("Otherwise is not signed in on this device (no token). Ask Jonathan.");
-  if (!response.ok || data.ok === false || data.error) throw new Error(data.message || data.error || "Otherwise request failed");
+  if (response.status === 401) throw new StoryRequestError("Otherwise is not signed in on this device (no token). Ask Jonathan.", { status: 401, code: "UNAUTHORIZED" });
+  if (!response.ok || data.ok === false || data.error) {
+    const message = data.message || data.error || (response.status >= 500 ? "The story server had a problem." : "Otherwise request failed");
+    throw new StoryRequestError(message, {
+      code: typeof data.error === "string" ? data.error : "",
+      status: response.status,
+      // A gateway timeout or an outage is "could not reach", not an answer.
+      // A server that answered in words is not "unreachable".
+      network: [502, 503, 504].includes(response.status) && !data.message,
+      errorId: errorIdOf(data, message),
+    });
+  }
   return data;
 }
 
@@ -559,19 +632,43 @@ function SkeletonCards() {
   return <div className="card-list">{[0, 1, 2].map((i) => <div className="skeleton-card" key={i} />)}</div>;
 }
 
+/** A load that failed, said as a failure, with a way to try again.
+ *
+ * QA O-10 (2026-10-06): every failed load rendered as an empty one -- the
+ * library on bad wifi said "No universes yet. Create your first world." and
+ * offered to make a new one. Empty and unreachable are different answers.
+ */
+export function LoadFailed({ error, what = "this", onRetry }) {
+  const { text, errorId } = friendlyError(error, `Couldn't open ${what}. Try again.`);
+  return (
+    <div className="empty-state load-failed" role="alert">
+      <h1>{error?.network ? "Couldn't reach the story server." : `Couldn't open ${what}.`}</h1>
+      <p>{error?.network ? "Nothing is lost. Check the wifi, then try again." : text}</p>
+      {errorId && <p className="error-id">Error {errorId.slice(0, 12)}</p>}
+      {onRetry && <button className="gold-button" type="button" onClick={onRetry}>Try again</button>}
+    </div>
+  );
+}
+
 function UniverseList() {
   const nav = useNavigate();
   const { activeReaders, readingGroup, setCurrentUniverse } = useApp();
   const [universes, setUniverses] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+  const [attempt, setAttempt] = useState(0);
   const [menuUniverseId, setMenuUniverseId] = useState(null);
   const [confirmUniverse, setConfirmUniverse] = useState(null);
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
   useEffect(() => {
+    let cancelled = false;
+    setLoadError(null);
+    setUniverses(null);
     execute("storyforge.universe.list.v1", { tenantId: "core", userId: "jonathan", requestedBy: activeReaders[0] || "jonathan" })
-      .then((res) => setUniverses(res.universes || []))
-      .catch(() => setUniverses([]));
-  }, [activeReaders]);
+      .then((res) => { if (!cancelled) setUniverses(res.universes || []); })
+      .catch((error) => { if (!cancelled) setLoadError(error); });
+    return () => { cancelled = true; };
+  }, [activeReaders, attempt]);
 
   async function deleteUniverse() {
     if (!confirmUniverse?.universeId) return;
@@ -589,7 +686,7 @@ function UniverseList() {
       setConfirmUniverse(null);
       setMenuUniverseId(null);
     } catch (error) {
-      setDeleteError(error.message || "Could not delete this universe.");
+      setDeleteError(friendlyErrorText(error, "Could not delete this universe."));
     } finally {
       setDeleting(false);
     }
@@ -599,8 +696,9 @@ function UniverseList() {
     <Page>
       <AppHeader title={<Wordmark small />} backTo="/" />
       <section className="content">
-        {universes === null && <SkeletonCards />}
-        {universes?.length === 0 && (
+        {universes === null && !loadError && <SkeletonCards />}
+        {loadError && <LoadFailed error={loadError} what="the library" onRetry={() => setAttempt((n) => n + 1)} />}
+        {!loadError && universes?.length === 0 && (
           <div className="empty-state">
             <h1>No universes yet.</h1>
             <p>Create your first world.</p>
@@ -696,19 +794,26 @@ function UniverseDetail() {
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [exportStatus, setExportStatus] = useState({});
+  const [loadError, setLoadError] = useState(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
+    let cancelled = false;
+    setLoadError(null);
     Promise.all([
       execute("storyforge.universe.get.v1", { tenantId: "core", userId: "jonathan", universeId: id }),
       execute("storyforge.story.list.v1", { tenantId: "core", userId: "jonathan", universeId: id }),
     ]).then(([detail, list]) => {
+      if (cancelled) return;
       setData(detail);
       setStories(list.stories || []);
       setCurrentUniverse(detail.universe);
-    }).catch(() => {
-      setData({});
-      setStories([]);
+    }).catch((error) => {
+      if (cancelled) return;
+      // A failure, not an empty universe (QA O-10).
+      setLoadError(error);
     });
-  }, [id, setCurrentUniverse]);
+    return () => { cancelled = true; };
+  }, [id, setCurrentUniverse, attempt]);
   const universe = data?.universe || {};
   const loreLabel = tierForReaders(activeReaders) <= 2 ? "World Notes" : "Lore";
 
@@ -807,7 +912,7 @@ function UniverseDetail() {
       setConfirmStory(null);
       setMenuStoryId(null);
     } catch (error) {
-      setDeleteError(error.message || "Could not delete this story.");
+      setDeleteError(friendlyErrorText(error, "Could not delete this story."));
     } finally {
       setDeleting(false);
     }
@@ -868,7 +973,7 @@ function UniverseDetail() {
     <Page>
       <AppHeader title={universe.title || "Universe"} backTo="/universes" />
       <section className="content universe-detail">
-        {!data ? <SkeletonCards /> : (
+        {loadError ? <LoadFailed error={loadError} what="this universe" onRetry={() => setAttempt((n) => n + 1)} /> : !data ? <SkeletonCards /> : (
           <>
             <div className="universe-hero">
               <div className="hero-icon">{universe.coverIcon || "✦"}</div>
@@ -1279,6 +1384,39 @@ function LoreSection({ title, children }) {
 // still be saved, so that refusal -- and only that one -- is retried the old way.
 const LEGACY_CHOICE_REFUSAL = /does not take|Invalid type for chosenBy|unknown_argument/i;
 
+export const CONVERSE_POLL_MS = 2500;
+export const CONVERSE_GIVE_UP_MS = 5 * 60 * 1000;
+
+/** One "Talk to the story" turn, without holding a request open for a minute.
+ *
+ * QA P2 (2026-10-06): a turn takes 40-58 s live and the clients gave up at 60
+ * (iOS) or on any network blip, losing an answer the server went on to finish.
+ * `async: true` returns a job at once; the job is read until it is done. A
+ * server from before the job mode answers the turn directly, which is used as is.
+ */
+export async function converseTurn(args, { run = execute, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = () => Date.now() } = {}) {
+  const started = now();
+  const first = await run("storyforge.converse.v1", { ...args, async: true });
+  if (!first?.jobId || first.status !== "pending") return first;
+  for (;;) {
+    await sleep(CONVERSE_POLL_MS);
+    let res;
+    try {
+      res = await run("storyforge.converse.v1", {
+        tenantId: args.tenantId, userId: args.userId, universeId: args.universeId, storyId: args.storyId,
+        jobId: first.jobId, requestedBy: args.requestedBy,
+      });
+    } catch (error) {
+      if (!error?.network || now() - started > CONVERSE_GIVE_UP_MS) throw error;
+      continue; // a dropped poll is not a lost answer; the job is still there
+    }
+    if (res?.status !== "pending") return res;
+    if (now() - started > CONVERSE_GIVE_UP_MS) {
+      throw new StoryRequestError("The story is taking a long time to answer. Ask again in a minute.", { code: "converse_slow" });
+    }
+  }
+}
+
 export async function recordChoiceWithReaders(base, readersNow, fallbackReader, run = execute) {
   try {
     return await run("storyforge.choice.record.v1", { ...base, chosenBy: readersNow, readingNow: readersNow });
@@ -1330,11 +1468,17 @@ function ChapterReader() {
   const [reshapePromptPoint, setReshapePromptPoint] = useState(null);
   const [reshapePoint, setReshapePoint] = useState(null);
   const [reshapeAnchor, setReshapeAnchor] = useState(null);
+  // A reshape the server finished and is holding for a yes (QA O-05).
+  const [reshapeProposal, setReshapeProposal] = useState(null);
   const [interactTarget, setInteractTarget] = useState(null);
   const [chatThread, setChatThread] = useState(null);
   const [chatBusy, setChatBusy] = useState(false);
   const [chatSavedChapter, setChatSavedChapter] = useState(false);
   const [proseReady, setProseReady] = useState(true);
+  const [chapterError, setChapterError] = useState(null);
+  const [chapterAttempt, setChapterAttempt] = useState(0);
+  const [creation, setCreation] = useState(null);
+  const [nextState, setNextState] = useState(null);
   const [reshapedPulse, setReshapedPulse] = useState(false);
   const [bookmarkFlash, setBookmarkFlash] = useState(false);
   // Per reading group, so it follows whoever is reading rather than the device.
@@ -1398,7 +1542,7 @@ function ChapterReader() {
         const bookmark = readBookmark(storyId);
         const total = storyChapterLimit(loadedStory);
         const target = clampChapter(
-          bookmark?.chapterNumber || saved.chapter || loadedStory.currentChapter || loadedStory.totalChapters || 1,
+          resumeChapter(bookmark, saved) || loadedStory.currentChapter || loadedStory.totalChapters || 1,
           total
         );
         setStory(loadedStory);
@@ -1410,7 +1554,7 @@ function ChapterReader() {
         if (cancelled) return;
         const saved = readPosition(readingGroup, storyId);
         const bookmark = readBookmark(storyId);
-        const landingChapter = bookmark?.chapterNumber || saved.chapter || 1;
+        const landingChapter = resumeChapter(bookmark, saved) || 1;
         const fallbackStory = { storyId, title: "Story", totalChapters: landingChapter, currentChapter: landingChapter };
         setStory(fallbackStory);
         setReadingNow(initialReadingNow(fallbackStory, activeReaders));
@@ -1436,12 +1580,17 @@ function ChapterReader() {
 
   useEffect(() => {
     if (!chapterNumber) return undefined;
+    let cancelled = false;
     setChoicesVisible(false);
     setChoiceRevealPending(false);
     setWaiting(null);
     setChapter(null);
+    setChapterError(null);
+    setNextState(null);
     getChapter(id, storyId, chapterNumber)
       .then((res) => {
+        if (cancelled) return;
+        setCreation(null);
         setChapter(res);
         // The chapter the card was offering to write now exists -- somebody
         // asked for it, here or somewhere else. The card has nothing left to
@@ -1453,10 +1602,83 @@ function ChapterReader() {
           return null;
         });
       })
-      .catch(() => setChapter({ ok: false, error: "chapter_not_found" }));
+      .catch((error) => {
+        if (cancelled) return;
+        // QA O-09 / O-10 (2026-10-06): this set `{ok: false}` as the chapter,
+        // and the reader rendered a blank "CHAPTER" page with "Preparing
+        // narration" forever -- for a brand-new story whose chapter 1 was
+        // still being written (~150 s), and for every network failure alike.
+        const missing = !error?.network && /chapter_not_found|not_found|does not exist/i.test(`${error?.code || ""} ${error?.message || ""}`);
+        const status = String(story?.creationStatus || story?.status || "");
+        if (missing && chapterNumber === 1 && (status === "creating" || status === "failed" || !Number(story?.totalChapters))) {
+          setCreation({ status: status === "failed" ? "failed" : "creating", startedAt: Date.now() });
+          return;
+        }
+        setChapterError(error || new StoryRequestError("chapter_not_found"));
+      });
     const timer = setTimeout(() => queueChoiceReveal(), 240000);
-    return () => clearTimeout(timer);
-  }, [id, storyId, chapterNumber]);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [id, storyId, chapterNumber, chapterAttempt]);
+
+  // A story whose chapter 1 is still being written. Poll the creation, fill
+  // the page when it lands, and say so honestly when it cannot (QA O-08/O-09).
+  useEffect(() => {
+    if (!creation || creation.status !== "creating") return undefined;
+    let cancelled = false;
+    async function check() {
+      try {
+        const res = await execute("storyforge.story.status.v1", { tenantId: "core", userId: "jonathan", universeId: id, storyId });
+        if (cancelled) return;
+        if (res.status === "complete") {
+          setCreation(null);
+          setChapterAttempt((n) => n + 1);
+        } else if (res.status === "failed") {
+          setCreation((current) => current ? { ...current, status: "failed", message: res.message } : current);
+        }
+      } catch (error) {
+        if (!cancelled && !error?.network) {
+          setCreation((current) => current ? { ...current, status: "failed", message: friendlyErrorText(error, STORY_CREATION_FAILED) } : current);
+        }
+      }
+    }
+    check();
+    const interval = setInterval(check, CREATION_POLL_MS);
+    const ticker = setInterval(() => setCreation((current) => current ? { ...current, tick: Date.now() } : current), 1000);
+    return () => { cancelled = true; clearInterval(interval); clearInterval(ticker); };
+  }, [id, storyId, creation?.status, creation?.startedAt]);
+
+  async function retryCreation() {
+    setCreation({ status: "creating", startedAt: Date.now(), retrying: true });
+    try {
+      await execute("storyforge.story.status.v1", { tenantId: "core", userId: "jonathan", universeId: id, storyId, retry: true });
+    } catch (error) {
+      setCreation({ status: "failed", startedAt: Date.now(), message: friendlyErrorText(error, STORY_CREATION_FAILED) });
+    }
+  }
+
+  // The end of a chapter whose pick was made somewhere else. The pick lived
+  // only in the picking device's localStorage, so every other device reached
+  // the end with no options, no Write card and no way on (QA O-07). The
+  // server holds the pick; ask it.
+  useEffect(() => {
+    if (!chapter?.chapterNumber || !chapter.choiceMade || pendingWrite?.chapterNumber === chapter.chapterNumber + 1) return undefined;
+    if (chapter.chapterNumber < storyChapterLimit(story, chapter.chapterNumber)) return undefined;
+    let cancelled = false;
+    const next = chapter.chapterNumber + 1;
+    getChapterStatus(id, storyId, next).then((status) => {
+      if (cancelled) return;
+      const pending = pendingFromStatus(status, next, chapter.choiceMade, activeReaders);
+      if (pending) {
+        setPendingWrite(pending);
+        writePendingWrite(storyId, pending);
+      } else if (status?.status === "complete") {
+        setStory((current) => current ? { ...current, totalChapters: Math.max(Number(current.totalChapters || 0), next) } : current);
+      } else if (status?.status === "generating") {
+        setNextState({ chapterNumber: next, status: "generating" });
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [id, storyId, chapter, story?.totalChapters]);
 
   useEffect(() => {
     const hasHeroImage = tier === 2 && (chapter?.images || []).some((img) => img.url);
@@ -1559,17 +1781,21 @@ function ChapterReader() {
     async function poll() {
       if (cancelled || finished) return;
       const elapsed = Date.now() - startedAt;
+      // Past the timeout the page SAYS it is taking long, and keeps checking.
+      // It used to stop: chapter 1 took 154 s and chapter 2 112 s live, the
+      // web gave up at 120 s, and a chapter that arrived later never appeared
+      // (QA P2, 2026-10-06). A real failure still comes back as "failed".
       if (elapsed > waitTimeoutMs(kind)) {
-        setWaiting((current) => current?.chapterNumber === targetChapter ? { ...current, timedOut: true } : current);
-        return;
+        setWaiting((current) => current?.chapterNumber === targetChapter && !current.timedOut ? { ...current, timedOut: true } : current);
+      } else {
+        setWaiting((current) => current?.chapterNumber === targetChapter
+          ? { ...current, messageIndex: ((current.messageIndex || 0) + 1) % CHAPTER_WAIT_MESSAGES.length }
+          : current);
       }
-      setWaiting((current) => current?.chapterNumber === targetChapter
-        ? { ...current, messageIndex: ((current.messageIndex || 0) + 1) % CHAPTER_WAIT_MESSAGES.length }
-        : current);
       try {
         const status = await getChapterStatus(id, storyId, targetChapter);
         if (cancelled || finished) return;
-        const step = chapterPollStep(kind, status, sawReshaping);
+        const step = chapterPollStep(kind, status, sawReshaping, waiting.reshapeId);
         if (step.sawReshaping && !sawReshaping) {
           sawReshaping = true;
           setWaiting((current) => current?.chapterNumber === targetChapter ? { ...current, sawReshaping: true } : current);
@@ -1577,6 +1803,12 @@ function ChapterReader() {
         if (step.action === "show") {
           finished = true;
           showChapter(status.chapter);
+        } else if (step.action === "held") {
+          // The change is written and waiting for a yes: put it on the page,
+          // over the chapter it would change, with "Use this" and "Not this".
+          finished = true;
+          setWaiting(null);
+          setReshapeProposal(status.proposal || { draftId: status.draftId, chapterNumber: targetChapter });
         } else if (step.action === "reread") {
           // The status route's `complete` carries the chapter, but a reshape is
           // the one case where the text on screen is the thing being replaced:
@@ -1585,15 +1817,16 @@ function ChapterReader() {
           const fresh = await execute("storyforge.chapter.get.v1", { tenantId: "core", userId: "jonathan", universeId: id, storyId, chapterNumber: targetChapter });
           if (!cancelled) showChapter(fresh);
         } else if (step.action === "failed") {
+          finished = true;
           setWaiting((current) => current?.chapterNumber === targetChapter
-            ? { ...current, failed: true, error: status.error || (kind === "reshape" ? "The change could not be written." : "Chapter generation failed.") }
+            ? { ...current, failed: true, error: status.message || (kind === "reshape" ? "The change could not be written. Nothing was changed." : `Chapter ${targetChapter} could not be written. Nothing is lost — try again in a minute.`) }
             : current);
         }
       } catch (error) {
         finished = false;
         if (!cancelled) {
           setWaiting((current) => current?.chapterNumber === targetChapter
-            ? { ...current, error: error.message || "Could not check chapter status." }
+            ? { ...current, error: error?.network ? "Can't reach the story server right now. Still trying…" : friendlyErrorText(error, "Could not check on the chapter. Still trying…") }
             : current);
         }
       }
@@ -1644,7 +1877,10 @@ function ChapterReader() {
         choiceId: String(choice.id || ""),
         choiceText,
         protagonistId: readingGroup,
-        protagonistGroup: activeReaders.length > 1 ? readingGroup : null,
+        // Only when there IS a group. `protagonistGroup: null` for a reader
+        // alone was refused by the server's validator -- Keen could not record
+        // a pick on his own (QA O-04, 2026-10-06).
+        ...(activeReaders.length > 1 ? { protagonistGroup: readingGroup } : {}),
       };
       // The people reading made the choice, together; the next chapter is
       // written for them.
@@ -1667,7 +1903,8 @@ function ChapterReader() {
       }
       setWaiting({ chapterNumber: Number(res?.chapterNumber) || nextChapter, startedAt: Date.now(), messageIndex: 0 });
     } catch (error) {
-      setWaiting({ chapterNumber: nextChapter, startedAt: Date.now(), failed: true, error: error.message || "Choice could not be recorded." });
+      setWaiting({ chapterNumber: nextChapter, startedAt: Date.now(), failed: true, pickFailed: true,
+        error: friendlyErrorText(error, "Your pick was not saved. Try tapping it again.") });
     }
   }
 
@@ -1701,19 +1938,54 @@ function ChapterReader() {
 
   async function submitReshape(text, point = reshapePoint) {
     if (!text.trim() || !point) return;
-    setWaiting({ kind: "reshape", chapterNumber, startedAt: Date.now(), messageIndex: 0 });
+    setReshapeProposal(null);
     setReshapeAnchor(point);
     setReshapePoint(null);
     setReshapePromptPoint(null);
-    await execute("storyforge.chapter.reshape.v1", {
-      tenantId: "core",
-      userId: activeReaders[0] || "jonathan",
-      universeId: id,
-      storyId,
-      chapterNumber,
-      interventionText: text,
-      interventionPoint: point.text,
-    }).catch((error) => setWaiting({ kind: "reshape", chapterNumber, startedAt: Date.now(), failed: true, error: error.message || "Could not reshape the story." }));
+    // `recording` holds the poll until the server has answered, so the poll
+    // knows this reshape's id before it reads a status.
+    setWaiting({ kind: "reshape", chapterNumber, startedAt: Date.now(), messageIndex: 0, recording: true });
+    try {
+      const res = await execute("storyforge.chapter.reshape.v1", {
+        tenantId: "core",
+        userId: activeReaders[0] || "jonathan",
+        universeId: id,
+        storyId,
+        chapterNumber,
+        interventionText: text,
+        interventionPoint: point.text,
+      });
+      setWaiting({ kind: "reshape", chapterNumber, startedAt: Date.now(), messageIndex: 0, reshapeId: res?.reshapeId || "",
+      });
+    } catch (error) {
+      setWaiting({ kind: "reshape", chapterNumber, startedAt: Date.now(), failed: true, error: friendlyErrorText(error, "Could not change the story. Nothing was changed.") });
+    }
+  }
+
+  // The held reshape: approving it is the write. The chapter on the page is
+  // then re-read from the server, never from the device cache.
+  async function approveReshape(proposal) {
+    try {
+      const res = await execute(AbilityCommandDraftApprove, { tenantId: "core", userId: activeReaders[0] || "jonathan", draftId: proposal.draftId });
+      if (res?.ok === false) throw new StoryRequestError(res.message || res.error || "not applied", { code: res.error });
+      setReshapeProposal(null);
+      const fresh = await execute("storyforge.chapter.get.v1", { tenantId: "core", userId: "jonathan", universeId: id, storyId, chapterNumber });
+      cacheChapter(`sf_chapter_cache_${storyId}`, fresh);
+      setChapter(fresh);
+      setReshapedPulse(true);
+      setTimeout(() => setReshapedPulse(false), 1800);
+    } catch (error) {
+      setReshapeProposal((current) => current ? { ...current, error: friendlyErrorText(error, "That change was not saved. The chapter is unchanged.") } : current);
+    }
+  }
+
+  async function dismissReshape(proposal) {
+    try {
+      await execute(AbilityCommandDraftDismiss, { tenantId: "core", userId: "jonathan", draftId: proposal.draftId });
+    } catch {
+      /* dismissing a draft that is already gone is still "not this" */
+    }
+    setReshapeProposal(null);
   }
 
   // One chat entry. storyforge.converse.v1 carries the world bible, canon,
@@ -1767,7 +2039,7 @@ function ChapterReader() {
     if (opening) loadChatHistory();
     setChatBusy(true);
     try {
-      const res = await execute("storyforge.converse.v1", {
+      const res = await converseTurn({
         tenantId: "core",
         userId: activeReaders[0] || "jonathan",
         universeId: id,
@@ -1798,10 +2070,12 @@ function ChapterReader() {
       // that already exists (storyforge.chapter.choices.set.v1). Both write
       // nothing until a tap.
       const proposal = res.proposal && (res.proposal.draftId || isChoicesProposal(res.proposal)) ? res.proposal : null;
-      setChatThread((current) => [...(current || []), { role: "assistant", content: res.message || res.response || "(the story had no words)", kind, suggestedReplies: suggested, proposal }]);
+      setChatThread((current) => current ? [...current, { role: "assistant", content: res.message || res.response || "(the story had no words)", kind, suggestedReplies: suggested, proposal }] : current);
       if (kind === "chapter" || kind === "edit" || kind === "chapter_edit") setChatSavedChapter(true);
     } catch (error) {
-      setChatThread((current) => [...(current || []), { role: "assistant", content: error.message || "The story didn't answer. Try again.", kind: "error" }]);
+      // A reply that lands after the sheet was closed does not re-open it
+      // (QA O-29); the turn is saved with the story and loads with the history.
+      setChatThread((current) => current ? [...current, { role: "assistant", content: friendlyErrorText(error, "The story didn't answer. Try again."), kind: "error" }] : current);
     } finally {
       setChatBusy(false);
     }
@@ -1869,7 +2143,7 @@ function ChapterReader() {
         : (res?.message || "The options were written but could not be verified. Check the chapter before relying on them.");
       setChatThread((current) => [...(current || []), { role: "assistant", content: text, kind: res?.verified ? "note" : "error" }]);
     } catch (error) {
-      setChatThread((current) => [...(current || []), { role: "assistant", content: error.message || "Those options were not saved.", kind: "error" }]);
+      setChatThread((current) => [...(current || []), { role: "assistant", content: friendlyErrorText(error, "Those options were not saved."), kind: "error" }]);
     }
   }
 
@@ -1892,6 +2166,24 @@ function ChapterReader() {
     }
   }
 
+  if (creation) {
+    return (
+      <CreationWait
+        creation={creation}
+        title={story?.title}
+        onRetry={retryCreation}
+        onBack={() => nav(`/universes/${id}`)}
+      />
+    );
+  }
+  if (chapterError) {
+    return (
+      <Page className="waiting-page">
+        <AppHeader title={story?.title || "Story"} backTo={`/universes/${id}`} />
+        <LoadFailed error={chapterError} what={`chapter ${chapterNumber}`} onRetry={() => setChapterAttempt((n) => n + 1)} />
+      </Page>
+    );
+  }
   if (!chapter || !chapterNumber) return <ReadingLoading text="Turning the page..." />;
   // The card belongs to the chapter the reader just finished, not to whichever
   // chapter they have since paged back to.
@@ -1908,7 +2200,15 @@ function ChapterReader() {
             ? "The story server is still rewriting it. Nothing is lost. Try Again keeps waiting; it does not send the change twice."
             : "The story server never said it started your change. It may not have arrived. Try Again keeps waiting; if nothing changes, send it again.")
           : waiting.error}
-        onRetry={() => setWaiting((current) => current ? { ...current, startedAt: Date.now(), timedOut: false, failed: false, error: "" } : current)}
+        failed={waiting.failed}
+        onRetry={() => setWaiting((current) => {
+          if (!current) return current;
+          // A pick that did not save goes back to the choices to tap again;
+          // anything else keeps waiting on the server.
+          if (current.pickFailed) return null;
+          return { ...current, startedAt: Date.now(), timedOut: false, failed: false, error: "" };
+        })}
+        onBack={waiting.failed ? () => setWaiting(null) : undefined}
       />
     );
   }
@@ -1949,6 +2249,7 @@ function ChapterReader() {
         <div className="gold-divider" />
         <NarrationPanel chapter={chapter} voiceId={voice} />
         <ChapterImages chapter={chapter} tier={tier} onHeroLoad={() => setProseReady(true)} />
+        <ReshapeResultCard proposal={reshapeProposal} onApprove={approveReshape} onDismiss={dismissReshape} />
         {/* Separate boundaries so the chapter and the conversation cannot take
             each other down. A crash in the sheet should not cost the page a
             child is reading, and vice versa. */}
@@ -1979,6 +2280,31 @@ function ChapterReader() {
             )}
             <ChoicePanel visible={choicesVisible} chapter={chapter} readers={orderedReaders(readingNow).length ? readingNow : activeReaders} onChoose={choose} showTooltip={showChoiceTooltip} onDismissTooltip={() => setShowChoiceTooltip(false)} />
           </>
+        )}
+        {/* A way on that is not a swipe or a drawer (QA O-17): the next
+            chapter, when it exists. */}
+        {!awaitingWrite && chapterNumber < storyChapterLimit(story, chapterNumber) && (
+          <div className="next-chapter">
+            <button
+              type="button"
+              className="gold-button next-chapter-button"
+              onClick={() => { setChapterNumber(chapterNumber + 1); window.scrollTo(0, 0); }}
+            >
+              Chapter {chapterNumber + 1} →
+            </button>
+          </div>
+        )}
+        {!awaitingWrite && nextState?.status === "generating" && nextState.chapterNumber === chapterNumber + 1 && (
+          <div className="next-chapter">
+            <p className="proposal-note">Chapter {nextState.chapterNumber} is being written.</p>
+            <button
+              type="button"
+              className="outline-button"
+              onClick={() => setWaiting({ chapterNumber: nextState.chapterNumber, startedAt: Date.now(), messageIndex: 0 })}
+            >
+              Wait for it here
+            </button>
+          </div>
         )}
         {/* 2026-09-13: the talk bar is gone. It opened the same StoryChatSheet
             the 💬 in the header opens, and it sat there permanently taking a
@@ -2537,7 +2863,7 @@ function ProposalCard({ proposal, busy, onApprove, onDismiss, onRevise }) {
   if (!proposal?.draftId) return null;
 
   const title = proposal.chapterTitle || (proposal.chapterNumber ? `Chapter ${proposal.chapterNumber}` : "A draft");
-  const opening = String(proposal.preview || proposal.opening || "").trim();
+  const opening = previewText(proposal.preview || proposal.opening);
   const disabled = busy || Boolean(pending);
 
   async function run(kind, fn) {
@@ -2586,15 +2912,49 @@ function ProposalCard({ proposal, busy, onApprove, onDismiss, onRevise }) {
         >
           {pending === "dismiss" ? "Dismissing…" : "Not this"}
         </button>
-        <button
-          type="button"
-          className="proposal-revise"
-          disabled={disabled}
-          onClick={() => onRevise(proposal)}
-        >
-          Change it
-        </button>
+        {onRevise && (
+          <button
+            type="button"
+            className="proposal-revise"
+            disabled={disabled}
+            onClick={() => onRevise(proposal)}
+          >
+            Change it
+          </button>
+        )}
       </div>
+      {proposal.error && <p className="write-chapter-error" role="alert">{proposal.error}</p>}
+    </section>
+  );
+}
+
+/** The words of a proposal's preview, whatever shape the server sent.
+ *
+ * A revision preview is an OBJECT ({kind, before, after}); rendering it as a
+ * string printed "[object Object]" on the card (QA O-23, 2026-10-06).
+ */
+export function previewText(preview) {
+  if (!preview) return "";
+  if (typeof preview === "string") return preview.trim();
+  if (typeof preview === "object") return String(preview.after || preview.text || preview.opening || "").trim();
+  return "";
+}
+
+/** A reshape the story server finished: the changed passage, held for a yes. */
+export function ReshapeResultCard({ proposal, onApprove, onDismiss }) {
+  if (!proposal?.draftId) return null;
+  const before = typeof proposal.preview === "object" ? String(proposal.preview?.before || "").trim() : "";
+  return (
+    <section className="reshape-result" aria-label="Your change is ready">
+      <div className="proposal-kicker">Your change is ready</div>
+      {proposal.interventionText && <p className="proposal-note">You asked: “{proposal.interventionText}”</p>}
+      {before && <p className="reshape-before"><span className="reshape-label">Before</span> {before}</p>}
+      <ProposalCard
+        proposal={{ ...proposal, chapterTitle: proposal.chapterTitle || `Chapter ${proposal.chapterNumber} with your change` }}
+        busy={false}
+        onApprove={onApprove}
+        onDismiss={onDismiss}
+      />
     </section>
   );
 }
@@ -3380,6 +3740,12 @@ export function writeTextScale(group, scale) {
  * what gets written on every scroll without the reader doing anything.
  */
 export function restoreReadingPosition({ bookmark, saved, chapterNumber, doc = document, win = window }) {
+  // Both in this chapter: the more recent one wins (QA O-16), so the bookmark
+  // is skipped when the reader has since scrolled on.
+  if (bookmark && saved && bookmark.chapterNumber === chapterNumber && saved.chapter === chapterNumber
+      && resumePlace(bookmark, saved)?.kind === "position") {
+    bookmark = null;
+  }
   if (bookmark && bookmark.chapterNumber === chapterNumber && bookmark.paragraphIndex != null) {
     const node = doc.querySelector(`[data-paragraph-index="${bookmark.paragraphIndex}"]`);
     if (node) {
@@ -3557,10 +3923,19 @@ export function waitTimeoutMs(kind) {
  * Returns `{ action, sawReshaping }`, where action is "wait", "show" (use
  * `status.chapter`), "reread" (fetch the chapter again) or "failed".
  */
-export function chapterPollStep(kind, status, sawReshaping = false) {
+export function chapterPollStep(kind, status, sawReshaping = false, reshapeId = "") {
   const state = status?.status;
   if (kind === "reshape") {
+    // QA O-05 (2026-10-06): the reshape ends at a HELD draft, and the server
+    // now says so ("held", with the change to approve). A status that names
+    // THIS reshape's id is about this reshape even if "reshaping" was never
+    // seen -- a fast reshape finished before the first poll and the old code
+    // waited six minutes for a "reshaping" that had already come and gone.
+    const mine = Boolean(reshapeId && status?.reshapeId && status.reshapeId === reshapeId);
     if (state === "reshaping") return { action: "wait", sawReshaping: true };
+    if (state === "held" && (mine || sawReshaping)) return { action: "held", sawReshaping: true };
+    if (state === "held_draft_missing" && (mine || sawReshaping)) return { action: "failed", sawReshaping: true };
+    if (state === "failed" && mine) return { action: "failed", sawReshaping: true };
     if (!sawReshaping) return { action: "wait", sawReshaping: false };
     if (state === "complete") return { action: "reread", sawReshaping };
     if (state === "failed") return { action: "failed", sawReshaping };
@@ -3571,11 +3946,15 @@ export function chapterPollStep(kind, status, sawReshaping = false) {
   return { action: "wait", sawReshaping };
 }
 
+export const CHAPTER_CACHE_SIZE = 12;
+
 function cacheChapter(cacheKey, chapter) {
   if (!chapter?.chapterNumber) return;
   try {
     const current = JSON.parse(localStorage.getItem(cacheKey) || "[]").filter((item) => item.chapterNumber !== chapter.chapterNumber);
-    const next = [{ chapterNumber: chapter.chapterNumber, chapter, cachedAt: Date.now() }, ...current].slice(0, 3);
+    // Enough to keep reading on a plane: every chapter opened recently, not
+    // just the last three (QA O-18).
+    const next = [{ chapterNumber: chapter.chapterNumber, chapter, cachedAt: Date.now() }, ...current].slice(0, CHAPTER_CACHE_SIZE);
     localStorage.setItem(cacheKey, JSON.stringify(next));
   } catch {
     // Device storage can be unavailable in private mode.
@@ -3586,15 +3965,84 @@ function ReadingLoading({ text }) {
   return <Page className="waiting-page"><WaitingState text={text} /></Page>;
 }
 
-function WaitingState({ text, timedOut, timedOutText = "This is taking longer than expected.", error, onRetry }) {
+function WaitingState({ text, timedOut, timedOutText = "This is taking longer than expected.", error, onRetry, failed, onBack }) {
   return (
     <div className="waiting">
-      <div className="compass" />
-      <h1>{timedOut ? timedOutText : text}</h1>
-      <p>{error || "The page is turning under a different sky."}</p>
-      {timedOut && <button className="gold-button waiting-retry" onClick={onRetry}>Try Again</button>}
+      {!failed && <div className="compass" />}
+      <h1>{failed ? "That didn't work." : timedOut ? timedOutText : text}</h1>
+      <p>{error || (timedOut ? "Still checking. It will appear here by itself when it is ready." : "The page is turning under a different sky.")}</p>
+      {(timedOut || failed) && onRetry && <button className="gold-button waiting-retry" onClick={onRetry}>Try Again</button>}
+      {failed && onBack && <button className="outline-button waiting-back" onClick={onBack}>Back to the chapter</button>}
     </div>
   );
+}
+
+export const CREATION_POLL_MS = 4000;
+const STORY_CREATION_FAILED = "Chapter 1 could not be written just now. Nothing was saved. Tap Try again in a minute.";
+
+/** A new story's first chapter, being written (QA O-09). */
+export function CreationWait({ creation, title, onRetry, onBack }) {
+  const seconds = Math.max(0, Math.round(((creation?.tick || Date.now()) - (creation?.startedAt || Date.now())) / 1000));
+  if (creation?.status === "failed") {
+    return (
+      <Page className="waiting-page">
+        <div className="waiting" role="alert">
+          <h1>Chapter 1 isn't written yet.</h1>
+          <p>{creation.message || STORY_CREATION_FAILED}</p>
+          <button className="gold-button waiting-retry" onClick={onRetry}>Try again</button>
+          {onBack && <button className="outline-button waiting-back" onClick={onBack}>Back to the stories</button>}
+        </div>
+      </Page>
+    );
+  }
+  return (
+    <Page className="waiting-page">
+      <div className="waiting" aria-live="polite">
+        <div className="compass" />
+        <h1>Writing chapter 1{title ? ` of ${title}` : ""}…</h1>
+        <p>A new story takes about two minutes. It will open here by itself.</p>
+        <div className="creation-progress" role="progressbar" aria-valuemin={0} aria-valuemax={180} aria-valuenow={Math.min(seconds, 180)}>
+          <div className="creation-progress-bar" style={{ width: `${Math.min(100, (seconds / 180) * 100)}%` }} />
+        </div>
+        <p className="creation-elapsed">{seconds < 60 ? `${seconds} seconds` : `${Math.floor(seconds / 60)} min ${seconds % 60} s`}</p>
+      </div>
+    </Page>
+  );
+}
+
+/** A held pick the server reported for the chapter after this one, as the
+ *  card's `pending`, or null. A child cannot start a chapter; an adult can. */
+export function pendingFromStatus(status, chapterNumber, choiceMade, readers = []) {
+  const state = status?.status;
+  if (state !== "awaiting_request" && state !== "awaiting_narrator") return null;
+  const childrenOnly = (readers || []).length > 0 && readers.every((r) => r === "keen" || r === "talia");
+  return {
+    chapterNumber,
+    choiceText: status.choiceText || choiceMade?.text || "",
+    madeBy: status.madeBy || choiceMade?.madeBy || "",
+    narratorOnly: childrenOnly,
+    recordedAt: Date.now(),
+    fromServer: true,
+  };
+}
+
+/** Which chapter to reopen a story at: the most recent of the bookmark and
+ *  the place the reader actually stopped (QA O-16; the rule storyforge-ios
+ *  #18 shipped). Reading past a bookmark makes the position newer, so the
+ *  story reopens where they stopped instead of snapping back. A bookmark set
+ *  after the last scroll is still the newest. Without timestamps (old saves)
+ *  the bookmark wins, as before. */
+export function resumePlace(bookmark, saved) {
+  const mark = bookmark?.chapterNumber ? { chapter: Number(bookmark.chapterNumber), at: Number(bookmark.savedAt) || 0, kind: "bookmark" } : null;
+  const pos = saved?.chapter ? { chapter: Number(saved.chapter), at: Number(saved.lastRead) || 0, kind: "position" } : null;
+  if (!mark) return pos;
+  if (!pos) return mark;
+  if (!mark.at || !pos.at) return mark;
+  return pos.at > mark.at ? pos : mark;
+}
+
+export function resumeChapter(bookmark, saved) {
+  return resumePlace(bookmark, saved)?.chapter || 0;
 }
 
 function NewUniverse() {
@@ -4426,7 +4874,7 @@ function RoutedBoundary({ children }) {
 // Exported for tests. The young-reader flow had no automated coverage at all,
 // which is how a dead end in the path a child uses survived unnoticed; a flow
 // that a seven-year-old walks should not be the least-tested screen in the app.
-export { NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard, ChoicesProposalCard, WriteNextChapterCard, ChoicePanel, heldForRequest, writeChapterMessage, AbilityCommandChapterRequest, ErrorBoundary, Lore, UniverseEditor, Prose, InteractiveParagraph };
+export { ChapterReader, UniverseList, NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard, ChoicesProposalCard, WriteNextChapterCard, ChoicePanel, heldForRequest, writeChapterMessage, AbilityCommandChapterRequest, ErrorBoundary, Lore, UniverseEditor, Prose, InteractiveParagraph };
 
 createRoot(document.getElementById("root")).render(<Root />);
 
