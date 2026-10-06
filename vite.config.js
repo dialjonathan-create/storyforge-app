@@ -1,9 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { versionJson } from "./build/versionJson.js";
+import { checkBundleSecrets } from "./build/checkBundleSecrets.js";
 
 export default defineConfig({
-  plugins: [react(), versionJson()],
+  plugins: [react(), versionJson(), checkBundleSecrets()],
   define: {
     __GIT_SHA__: JSON.stringify((process.env.VITE_GIT_SHA || "unknown").trim() || "unknown"),
   },
