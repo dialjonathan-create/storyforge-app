@@ -6,7 +6,7 @@ import "./styles.css";
 import NarrationPanel from "./NarrationPanel";
 import { fetchVoices } from "./kokoro";
 import StoryMap, { mappablePlaces } from "./StoryMap";
-import { configureAuth, currentSession, hasSessionFor, installSessionFetch, SIGNED_OUT_EVENT } from "./auth";
+import { configureAuth, currentSession, hasSessionFor, installSessionFetch, isChildProfile, SIGNED_OUT_EVENT } from "./auth";
 import { SignInSheet } from "./SignIn";
 
 // The build this browser is actually running, for when "did it deploy?" is
@@ -49,8 +49,8 @@ const FAMILY = [
 ];
 const CHAPTER_WAIT_MESSAGES = [
   "The story is being written...",
-  "Checking for consistency...",
-  "The Meridian is charting the course...",
+  "The next page is taking shape...",
+  "The story is finding its way...",
 ];
 const RESHAPE_WAIT_MESSAGES = [
   "Rewriting the story from here...",
@@ -105,16 +105,24 @@ export function forgetReadingNowMemory() {
 
 /** Who a story's next chapter is for, before anybody taps: what was chosen
  *  last on this device this session, else what the server remembers, else all
- *  of the story's readers. Always a subset of the story's readers. */
-export function initialReadingNow(story, fallback = []) {
+ *  of the story's readers -- each narrowed to the people actually HERE (`present`,
+ *  who signed in on the picker).
+ *
+ *  QA O-22 / O2-02 (2026-10-06): Keen alone on "Jonathan & Keen" (the Meridian)
+ *  saw Jonathan & Keen pre-selected, "What do you two decide?", and his pick
+ *  failed until he unticked his father. Who is reading tonight is who is here.
+ *  Talia alone on a story that is not hers is reading as herself. */
+export function initialReadingNow(story, present = []) {
   const readers = orderedReaders(story?.primaryReaders || []);
-  const pool = readers.length ? readers : orderedReaders(fallback);
+  const here = orderedReaders(present);
+  const pool = readers.length ? readers : here;
   const inPool = (ids) => orderedReaders(ids).filter((id) => pool.includes(id));
-  const remembered = inPool(readingNowMemory.get(story?.storyId) || []);
-  if (remembered.length) return remembered;
-  const stored = inPool(story?.readingNow || []);
-  if (stored.length) return stored;
-  return pool;
+  const narrow = (ids) => (here.length ? ids.filter((id) => here.includes(id)) : ids);
+  for (const candidate of [readingNowMemory.get(story?.storyId) || [], story?.readingNow || [], pool]) {
+    const chosen = narrow(inPool(candidate));
+    if (chosen.length) return chosen;
+  }
+  return here.length ? here : pool;
 }
 
 /** Tap a chip: in or out. The last reader cannot be tapped out -- somebody is
@@ -354,10 +362,11 @@ export function getCurrentReaderId() {
  * wifi said "No universes yet. Create your first world."
  */
 export class StoryRequestError extends Error {
-  constructor(message, { code = "", status = 0, network = false, errorId = "" } = {}) {
+  constructor(message, { code = "", status = 0, network = false, errorId = "", reason = "" } = {}) {
     super(message);
     this.name = "StoryRequestError";
     this.code = code;
+    this.reason = reason;
     this.status = status;
     this.network = network;
     this.errorId = errorId;
@@ -386,7 +395,16 @@ export function friendlyError(error, fallback = "Something went wrong. Try again
   const errorId = error?.errorId || errorIdOf(null, raw);
   if (error?.network) return { text: "Couldn't reach the story server. Check the wifi, then try again.", errorId: "" };
   if (/not signed in/i.test(raw)) return { text: raw, errorId: "" };
-  if (/forbidden/i.test(raw) || error?.status === 403) return { text: "This story isn't open to this reader.", errorId };
+  // A refusal says WHY in a sentence ("A grown-up has to do that.", "Only the
+  // person who made this world can do that."). O2-10: every 403 used to read
+  // "This story isn't open to this reader." -- for a pick, for a delete, for
+  // anything -- which was wrong more often than right.
+  const isRefusal = /forbidden/i.test(raw) || error?.status === 403 || error?.code === "forbidden";
+  if (isRefusal) {
+    const sentence = raw && !/^forbidden$/i.test(raw) && !/^[A-Za-z_]+$/.test(raw)
+      && !/invocationId|receiptId|Call form:|capability|\.v1\b|[{}]|FORBIDDEN_FOR_SCOPE/i.test(raw);
+    return { text: sentence ? raw : "That isn't open to this reader.", errorId };
+  }
   if (/busy right now|try again in a minute/i.test(raw) && raw.length < 160 && !/[{}=]|invocationId|capability/i.test(raw)) {
     return { text: raw, errorId };
   }
@@ -426,6 +444,7 @@ async function execute(command, args = {}) {
       // A server that answered in words is not "unreachable".
       network: [502, 503, 504].includes(response.status) && !data.message,
       errorId: errorIdOf(data, message),
+      reason: typeof data.reason === "string" ? data.reason : "",
     });
   }
   return data;
@@ -628,6 +647,20 @@ function AppHeader({ backTo, title, right }) {
   );
 }
 
+/** "1 story", "2 stories" (QA O-30: "1 chapters"). */
+export function countOf(n, one, many) {
+  const value = Number(n || 0);
+  return `${value} ${value === 1 ? one : many}`;
+}
+
+/** Is a grown-up signed in on this device right now? The delete / edit menus
+ *  are theirs only (QA O-13; r2: Keen still saw "Delete Universe"). The server
+ *  refuses a child anyway -- this is about not offering what cannot be done. */
+export function grownUpSignedIn() {
+  const who = currentSession()?.userId;
+  return Boolean(who) && !isChildProfile(who);
+}
+
 function SkeletonCards() {
   return <div className="card-list">{[0, 1, 2].map((i) => <div className="skeleton-card" key={i} />)}</div>;
 }
@@ -720,6 +753,7 @@ function UniverseList() {
                   key={universe.universeId}
                   onClick={() => { setCurrentUniverse(universe); nav(`/universes/${universe.universeId}`); }}
                 >
+                  {grownUpSignedIn() && (
                   <button
                     className="card-menu-button"
                     type="button"
@@ -731,7 +765,8 @@ function UniverseList() {
                   >
                     ⋯
                   </button>
-                  {menuUniverseId === universe.universeId && (
+                  )}
+                  {grownUpSignedIn() && menuUniverseId === universe.universeId && (
                     <div className="card-menu" onClick={(event) => event.stopPropagation()}>
                       <button type="button" className="danger-action" onClick={() => { setDeleteError(""); setConfirmUniverse(universe); }}>
                         Delete Universe
@@ -743,7 +778,7 @@ function UniverseList() {
                   <div className="card-copy">
                     <h2>{universe.title}</h2>
                     <p>{universe.tagline || "A world waiting to be opened."}</p>
-                    <div className="metadata">{universe.storyCount || 0} stories{pos ? ` · last read ${pos}` : ""}</div>
+                    <div className="metadata">{countOf(universe.storyCount, "story", "stories")}{pos ? ` · last read ${pos}` : ""}</div>
                     <button className="inline-button">{pos ? "Continue" : "Explore"}</button>
                   </div>
                 </motion.article>
@@ -1018,6 +1053,7 @@ function UniverseDetail() {
                           >
                             ↓
                           </button>
+                          {grownUpSignedIn() && (
                           <button
                             className="card-menu-button"
                             type="button"
@@ -1029,8 +1065,9 @@ function UniverseDetail() {
                           >
                             ⋯
                           </button>
+                          )}
                         </div>
-                        {menuStoryId === story.storyId && (
+                        {grownUpSignedIn() && menuStoryId === story.storyId && (
                           <div className="card-menu" onClick={(event) => event.stopPropagation()}>
                             <button type="button" onClick={() => openMetaEditor(story)}>
                               Edit Genre &amp; Audience
@@ -1053,7 +1090,7 @@ function UniverseDetail() {
                           {story.genre || "genre not set"}
                           {story.audienceAge ? ` · ${story.audienceAge}` : ""}
                         </p>
-                        <div className="metadata">{story.totalChapters || 0} chapters · {pos.chapter ? `Chapter ${pos.chapter}` : "not started"}</div>
+                        <div className="metadata">{countOf(story.totalChapters, "chapter", "chapters")} · {pos.chapter ? `Chapter ${pos.chapter}` : "not started"}</div>
                         <Progress value={pos.chapter || 0} max={story.totalChapters || 1} />
                         {(exportState.message || exportState.error) && (
                           <div className={exportState.error ? "inline-error story-export-status" : "story-export-status"}>
@@ -1608,6 +1645,13 @@ function ChapterReader() {
         // and the reader rendered a blank "CHAPTER" page with "Preparing
         // narration" forever -- for a brand-new story whose chapter 1 was
         // still being written (~150 s), and for every network failure alike.
+        // Offline (or the server unreachable) with this chapter on the device:
+        // read it from the device (QA O-18).
+        const kept = error?.network ? cachedChapter(storyId, chapterNumber) : null;
+        if (kept) {
+          setChapter(kept);
+          return;
+        }
         const missing = !error?.network && /chapter_not_found|not_found|does not exist/i.test(`${error?.code || ""} ${error?.message || ""}`);
         const status = String(story?.creationStatus || story?.status || "");
         if (missing && chapterNumber === 1 && (status === "creating" || status === "failed" || !Number(story?.totalChapters))) {
@@ -1619,6 +1663,21 @@ function ChapterReader() {
     const timer = setTimeout(() => queueChoiceReveal(), 240000);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [id, storyId, chapterNumber, chapterAttempt]);
+
+  // A change to THIS chapter that the story server is holding for a yes -- a
+  // revision asked for in "Talk to the story", or a reshape whose waiting screen
+  // was closed. QA O-06 (r2): the server held the revise draft and the web never
+  // showed it anywhere. It is shown over the chapter, with Use this / Not this.
+  // Only a narrator can list drafts; for anyone else this quietly finds nothing.
+  useEffect(() => {
+    if (!chapter?.chapterNumber || reshapeProposal || !grownUpSignedIn()) return undefined;
+    let cancelled = false;
+    findHeldChange(id, storyId, chapter.chapterNumber)
+      .then((proposal) => { if (!cancelled && proposal) setReshapeProposal((current) => current || proposal); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, storyId, chapter?.chapterNumber]);
 
   // A story whose chapter 1 is still being written. Poll the creation, fill
   // the page when it lands, and say so honestly when it cannot (QA O-08/O-09).
@@ -1795,6 +1854,9 @@ function ChapterReader() {
       try {
         const status = await getChapterStatus(id, storyId, targetChapter);
         if (cancelled || finished) return;
+        if (status?.progress && typeof status.progress === "object") {
+          setWaiting((current) => current?.chapterNumber === targetChapter ? { ...current, progress: status.progress } : current);
+        }
         const step = chapterPollStep(kind, status, sawReshaping, waiting.reshapeId);
         if (step.sawReshaping && !sawReshaping) {
           sawReshaping = true;
@@ -2015,7 +2077,9 @@ function ChapterReader() {
       });
       const turns = Array.isArray(res.turns) ? res.turns : [];
       if (!turns.length) return;
-      setChatThread((current) => mergeConversationHistory(turns, current || []));
+      // A sheet closed while its history was loading stays closed (QA O-29;
+      // r2 saw it reopen by itself).
+      setChatThread((current) => (current ? mergeConversationHistory(turns, current) : current));
     } catch {
       /* the sheet still works without it */
     }
@@ -2160,7 +2224,10 @@ function ChapterReader() {
     setChatThread(null);
     if (chatSavedChapter) {
       setChatSavedChapter(false);
-      getChapter(id, storyId, chapterNumber)
+      // From the server: the device cache still holds the words before the
+      // change, and getChapter answers from it first (r2: "Use this" on a
+      // revision, and the page kept the old chapter).
+      getChapter(id, storyId, chapterNumber, { fresh: true })
         .then((res) => setChapter(res))
         .catch(() => {});
     }
@@ -2192,7 +2259,8 @@ function ChapterReader() {
   if (waiting) {
     return (
       <WaitingState
-        text={waiting.recording ? "Saving what you picked..." : waitMessages[waiting.messageIndex || 0]}
+        text={waiting.recording ? "Saving what you picked..." : (waiting.kind !== "reshape" && progressText(waiting.progress, waiting.chapterNumber)) || waitMessages[waiting.messageIndex || 0]}
+        detail={waiting.kind !== "reshape" && !waiting.recording ? waitingDetail(waiting) : ""}
         timedOut={waiting.timedOut}
         timedOutText={waiting.kind === "reshape" ? "Your change is not on the page yet." : undefined}
         error={waiting.timedOut && waiting.kind === "reshape" && !waiting.error
@@ -2217,7 +2285,7 @@ function ChapterReader() {
     <Page className="reader-page" style={{ "--prose-scale": textScale }}>
       <div className="scroll-progress" style={{ transform: `scaleX(${progress})` }} />
       <header className="reader-header">
-        <button className="icon-button" onClick={() => nav(`/universes/${id}`)}>←</button>
+        <button className="icon-button" onClick={() => nav(`/universes/${id}`)} aria-label="Back to the stories">←</button>
         <div className="reader-title">{story?.title || "Story"}</div>
         {/* Grouped rather than four more grid columns: the 💬 is conditional,
             and a fixed template leaves a hole in the header for tier 1. */}
@@ -2226,7 +2294,7 @@ function ChapterReader() {
           {/* The only way into the sheet used to be typing into the talk bar,
               which made the conversation invisible until you started a new one. */}
           {tier !== 1 && <button className="icon-button" onClick={openChat} aria-label="Open the conversation">💬</button>}
-          <button className="icon-button" onClick={() => setMenuOpen(true)}>≡</button>
+          <button className="icon-button" onClick={() => setMenuOpen(true)} aria-label="Chapters and settings">≡</button>
           <Avatars ids={activeReaders} />
         </div>
       </header>
@@ -2552,6 +2620,34 @@ function splitWords(token) {
  * Blocks, in reading order. A paragraph or a scene break — never a paragraph
  * whose entire content is three asterisks, which is what the reader showed.
  */
+const CHOICE_LINE = /^\s*(?:[-*\u2022\u2014\u2013]+|\d+[.)]|[A-Ca-c][.)])\s*/;
+
+function choiceKey(text) {
+  return String(text || "").replace(CHOICE_LINE, "").replace(/[*_"\u201c\u201d]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/** The chapter's own options, when the prose ALSO ends by listing them, are
+ *  shown once -- as the buttons (QA O2-09: Meridian chapter 30 showed its options
+ *  twice). Display only: the stored chapter is not touched. Only trailing
+ *  paragraphs that each match one of the chapter's choices are dropped, and a
+ *  heading line right above them ("What happens next?") goes with them. */
+export function withoutRepeatedChoices(blocks, choices) {
+  const keys = new Set((choices || []).map((c) => choiceKey(typeof c === "string" ? c : c?.text)).filter(Boolean));
+  if (!keys.size) return blocks;
+  let end = blocks.length;
+  let dropped = 0;
+  while (end > 0) {
+    const block = blocks[end - 1];
+    if (block.type !== "paragraph" || !keys.has(choiceKey(block.text))) break;
+    end -= 1;
+    dropped += 1;
+  }
+  if (dropped < 2) return blocks;
+  const lead = blocks[end - 1];
+  if (lead?.type === "paragraph" && lead.text.length < 80 && /[?:]\**$/.test(lead.text.trim())) end -= 1;
+  return blocks.slice(0, end);
+}
+
 export function proseBlocks(text) {
   return stripProseDirectives(text)
     .split(/\n+/)
@@ -2561,7 +2657,7 @@ export function proseBlocks(text) {
 }
 
 function Prose({ chapter, tier, entities, onLongPress, onEntityTap, onWordTap, pulseFrom }) {
-  const blocks = proseBlocks(chapter.prose);
+  const blocks = withoutRepeatedChoices(proseBlocks(chapter.prose || chapter.chapterText), chapter.choices);
   const images = (chapter.images || []).filter((img) => img.url);
   // Paragraphs keep their own numbering across scene breaks, because the
   // bookmark and the reshape anchor both address a paragraph index and a rule
@@ -2946,7 +3042,7 @@ export function ReshapeResultCard({ proposal, onApprove, onDismiss }) {
   const before = typeof proposal.preview === "object" ? String(proposal.preview?.before || "").trim() : "";
   return (
     <section className="reshape-result" aria-label="Your change is ready">
-      <div className="proposal-kicker">Your change is ready</div>
+      <div className="proposal-kicker">{proposal.origin === "revision" ? "A change to this chapter is waiting" : "Your change is ready"}</div>
       {proposal.interventionText && <p className="proposal-note">You asked: “{proposal.interventionText}”</p>}
       {before && <p className="reshape-before"><span className="reshape-label">Before</span> {before}</p>}
       <ProposalCard
@@ -3302,11 +3398,13 @@ function StoryChatSheet({ thread, busy, onSend, onClose, onApprove, onDismiss, o
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [thread, busy]);
   useKeyboardInset(Boolean(thread));
+  useEscape(Boolean(thread), onClose);
   if (!thread) return null;
   return (
     <motion.div className="bottom-sheet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-      <button className="sheet-shade" onClick={onClose} />
-      <motion.section className="sheet-panel chat-sheet" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}>
+      <button className="sheet-shade" onClick={onClose} aria-label="Close" />
+      <motion.section className="sheet-panel chat-sheet" role="dialog" aria-label="Talk to the story" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}>
+        <SheetClose onClose={onClose} />
         <h2>Talk to the story</h2>
         {/* The transcript is the only thing that scrolls. The panel used to
             scroll as a whole, so a forty-line reply pushed the compose row off
@@ -3395,11 +3493,13 @@ function ReshapeConfirm({ point, onCancel, onConfirm }) {
 function ReshapeSheet({ point, tier, onCancel, onSubmit }) {
   const [text, setText] = useState("");
   useEffect(() => setText(""), [point]);
+  useEscape(Boolean(point), onCancel);
   if (!point) return null;
   return (
     <motion.div className="bottom-sheet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-      <button className="sheet-shade" onClick={onCancel} />
-      <motion.section className="sheet-panel" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}>
+      <button className="sheet-shade" onClick={onCancel} aria-label="Close" />
+      <motion.section className="sheet-panel" role="dialog" aria-label="Change the story from here" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}>
+        <SheetClose onClose={onCancel} />
         <h2>{tier === 2 ? "What should happen differently?" : "What do you want to change from here?"}</h2>
         <p className="sheet-context">{point.text}</p>
         <textarea value={text} onChange={(event) => setText(event.target.value)} autoFocus />
@@ -3420,6 +3520,7 @@ function InteractionSheet({ target, tier, chapter, universeId, storyId, userId, 
     if (target?.pendingQuestion) submit(target.pendingQuestion);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target?.name]);
+  useEscape(Boolean(target), onClose);
   if (!target) return null;
   async function submit(value = question) {
     const q = String(value || "").trim();
@@ -3440,7 +3541,7 @@ function InteractionSheet({ target, tier, chapter, universeId, storyId, userId, 
       });
       setItems((current) => [...current, { question: q, response: res.response }]);
     } catch (error) {
-      setItems((current) => [...current, { question: q, response: error.message || "No answer came back." }]);
+      setItems((current) => [...current, { question: q, response: friendlyErrorText(error, `${target.name} didn't answer. Ask again in a minute.`), failed: true }]);
     } finally {
       setBusy(false);
     }
@@ -3448,8 +3549,9 @@ function InteractionSheet({ target, tier, chapter, universeId, storyId, userId, 
   const presets = ["What's your favorite thing?", "Are you scared?", "What happens next?"];
   return (
     <motion.div className="bottom-sheet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-      <button className="sheet-shade" onClick={onClose} />
-      <motion.section className="sheet-panel interaction-panel" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}>
+      <button className="sheet-shade" onClick={onClose} aria-label="Close" />
+      <motion.section className="sheet-panel interaction-panel" role="dialog" aria-label={`Talk to ${target.name}`} initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}>
+        <SheetClose onClose={onClose} />
         <h2>{tier === 2 ? `${target.type === "character" ? "Talk to" : "Explore"} ${target.name}` : target.name}</h2>
         {target.description && <p className="sheet-context">{target.description}</p>}
         <div className="interaction-log">
@@ -3482,19 +3584,21 @@ function WordDefinition({ word, onClose }) {
         if (!cancelled) setData(res);
       })
       .catch((err) => {
-        if (!cancelled) setError(err.message || "Could not look that word up.");
+        if (!cancelled) setError(friendlyErrorText(err, "Could not look that word up."));
       });
     return () => {
       cancelled = true;
     };
   }, [word]);
+  useEscape(Boolean(word), onClose);
 
   return (
     <AnimatePresence>
       {word && (
         <motion.div className="bottom-sheet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-          <button className="sheet-shade" onClick={onClose} />
-          <motion.section className="sheet-panel word-define-panel" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}>
+          <button className="sheet-shade" onClick={onClose} aria-label="Close" />
+          <motion.section className="sheet-panel word-define-panel" role="dialog" aria-label={`What ${word} means`} initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}>
+            <SheetClose onClose={onClose} />
             <h2>
               {word}
               {data?.phonetic ? <span className="word-phonetic"> {data.phonetic}</span> : null}
@@ -3617,12 +3721,14 @@ export function VoiceChoice({ voices, value, onChange }) {
 
 
 function ChapterMenu({ open, onClose, total, current, onJump, textScale = 1, onTextScale, voices = [], voice, onVoice, onSwitchReader, readerName }) {
+  useEscape(open, onClose);
   return (
     <AnimatePresence>
       {open && (
         <motion.div className="drawer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-          <button className="drawer-shade" onClick={onClose} />
-          <motion.aside initial={{ x: "100%" }} animate={{ x: 0 }} exit={{ x: "100%" }} transition={{ duration: 0.25 }} className="drawer-panel">
+          <button className="drawer-shade" onClick={onClose} aria-label="Close" />
+          <motion.aside initial={{ x: "100%" }} animate={{ x: 0 }} exit={{ x: "100%" }} transition={{ duration: 0.25 }} className="drawer-panel" role="dialog" aria-label="Chapters and settings">
+            <SheetClose onClose={onClose} />
             {onTextScale && (
               <>
                 <h2>Text size</h2>
@@ -3652,6 +3758,22 @@ function ChapterMenu({ open, onClose, total, current, onJump, textScale = 1, onT
       )}
     </AnimatePresence>
   );
+}
+
+/** Escape closes an open sheet or drawer (QA O-31: sheets closed only by
+ *  tapping the dimmed area). */
+export function useEscape(open, onClose) {
+  useEffect(() => {
+    if (!open || !onClose) return undefined;
+    const onKey = (event) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+}
+
+/** A visible, named close control for a sheet. */
+function SheetClose({ onClose, label = "Close" }) {
+  return <button type="button" className="sheet-close" aria-label={label} onClick={onClose}>×</button>;
 }
 
 function useSwipe(onSwipe) {
@@ -3866,8 +3988,22 @@ function writeChapterMessage(error, chapterNumber) {
   return { text: `Chapter ${n} was not written. Nothing is lost — your pick is saved. Try again in a minute.`, detail: raw };
 }
 
-async function getChapter(universeId, storyId, chapterNumber) {
+function cachedChapter(storyId, chapterNumber) {
+  try {
+    const cached = JSON.parse(localStorage.getItem(`sf_chapter_cache_${storyId}`) || "[]");
+    return cached.find((item) => item.chapterNumber === chapterNumber)?.chapter || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getChapter(universeId, storyId, chapterNumber, { fresh = false } = {}) {
   const cacheKey = `sf_chapter_cache_${storyId}`;
+  if (fresh) {
+    const chapter = await execute("storyforge.chapter.get.v1", { tenantId: "core", userId: "jonathan", universeId, storyId, chapterNumber });
+    cacheChapter(cacheKey, chapter);
+    return chapter;
+  }
   try {
     const cached = JSON.parse(localStorage.getItem(cacheKey) || "[]");
     const hit = cached.find((item) => item.chapterNumber === chapterNumber);
@@ -3885,6 +4021,30 @@ async function getChapter(universeId, storyId, chapterNumber) {
   return chapter;
 }
 
+/** The newest held revision or reshape of this chapter, as a card's proposal,
+ *  or null (O-06). */
+export async function findHeldChange(universeId, storyId, chapterNumber, run = execute) {
+  const listed = await run("storyforge.draft.list.v1", { tenantId: "core", userId: "jonathan", universeId, storyId });
+  const row = (listed?.drafts || []).find((d) => Number(d.chapterNumber) === Number(chapterNumber)
+    && (d.origin === "revision" || d.origin === "reshape"));
+  if (!row?.draftId) return null;
+  let draft = {};
+  try {
+    draft = (await run("storyforge.draft.get.v1", { tenantId: "core", userId: "jonathan", draftId: row.draftId }))?.draft || {};
+  } catch {
+    /* the excerpt is enough for the card */
+  }
+  return {
+    draftId: row.draftId,
+    chapterNumber: Number(chapterNumber),
+    origin: row.origin,
+    chapterTitle: draft.chapterTitle || row.chapterTitle || "",
+    interventionText: draft.interventionText || "",
+    preview: draft.preview || row.excerpt || "",
+    prose: draft.prose || draft.chapterText || "",
+  };
+}
+
 async function getChapterStatus(universeId, storyId, chapterNumber) {
   const params = new URLSearchParams({
     tenantId: "core",
@@ -3899,7 +4059,29 @@ async function getChapterStatus(universeId, storyId, chapterNumber) {
   return data;
 }
 
-export const CHAPTER_WAIT_TIMEOUT_MS = 120000;
+// The server now writes a chapter inside one ~2-minute budget (r2 measured
+// ~300 s, the window was 120 s, so "taking longer than expected" was routine).
+// The window is the budget plus the save, and the screen says what stage the
+// writing is at, from the server.
+export const CHAPTER_WAIT_TIMEOUT_MS = 180000;
+
+/** What the waiting screen says, from `chapter.status`'s `progress`. */
+export function progressText(progress, chapterNumber) {
+  const phase = progress?.phase;
+  const n = chapterNumber ? ` ${chapterNumber}` : "";
+  if (phase === "writing") return `Writing chapter${n}...`;
+  if (phase === "checking" || phase === "scoring") return `Reading chapter${n} over before it's shown...`;
+  if (phase === "rewriting") return `Fixing a part of chapter${n} that didn't fit...`;
+  return "";
+}
+
+/** The line under it: how long so far, against about how long it takes. */
+export function waitingDetail(waiting) {
+  const seconds = Math.max(0, Math.round((Date.now() - (waiting?.startedAt || Date.now())) / 1000));
+  if (seconds < 5) return "A chapter takes about two minutes. It will appear here by itself.";
+  const so = seconds < 60 ? `${seconds} seconds` : `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
+  return `A chapter takes about two minutes. ${so} so far.`;
+}
 // A reshape rewrites a whole chapter from the intervention on. 2026-09-21 one
 // took two and a half minutes, past the chapter timeout.
 export const RESHAPE_WAIT_TIMEOUT_MS = 6 * 60 * 1000;
@@ -3965,12 +4147,12 @@ function ReadingLoading({ text }) {
   return <Page className="waiting-page"><WaitingState text={text} /></Page>;
 }
 
-function WaitingState({ text, timedOut, timedOutText = "This is taking longer than expected.", error, onRetry, failed, onBack }) {
+function WaitingState({ text, detail = "", timedOut, timedOutText = "This is taking longer than expected.", error, onRetry, failed, onBack }) {
   return (
-    <div className="waiting">
+    <div className="waiting" aria-live="polite">
       {!failed && <div className="compass" />}
       <h1>{failed ? "That didn't work." : timedOut ? timedOutText : text}</h1>
-      <p>{error || (timedOut ? "Still checking. It will appear here by itself when it is ready." : "The page is turning under a different sky.")}</p>
+      <p>{error || (timedOut ? "Still checking. It will appear here by itself when it is ready." : (detail || "The page is turning under a different sky."))}</p>
       {(timedOut || failed) && onRetry && <button className="gold-button waiting-retry" onClick={onRetry}>Try Again</button>}
       {failed && onBack && <button className="outline-button waiting-back" onClick={onBack}>Back to the chapter</button>}
     </div>
@@ -4329,8 +4511,21 @@ function NewStory() {
   );
 }
 
-function inferTitle(text) {
-  const words = String(text || "").replace(/[^\w\s'-]/g, " ").trim().split(/\s+/).filter(Boolean).slice(0, 5);
+/** A story title from what was typed. QA O-24: the young flow's seed is
+ *  "World: ...\nMain character: ...\nMost exciting thing: ...", and the first
+ *  five words of THAT became the title ("World A Floating Island Main"). The
+ *  labels are never part of a title: the main character's answer is, else the
+ *  world's, else the first line. */
+export function inferTitle(text) {
+  const raw = String(text || "");
+  const labelled = {};
+  for (const line of raw.split(/\n+/)) {
+    const m = line.match(/^\s*(World|Main character|Most exciting thing)\s*:\s*(.*)$/i);
+    if (m) labelled[m[1].toLowerCase()] = m[2].trim();
+  }
+  const source = labelled["main character"] || labelled.world
+    || raw.split(/\n+/).map((l) => l.replace(/^\s*[A-Za-z ]{2,24}:\s*/, "").trim()).find(Boolean) || "";
+  const words = source.replace(/[^\w\s'-]/g, " ").trim().split(/\s+/).filter(Boolean).slice(0, 6);
   return words.length ? words.map((w) => w[0].toUpperCase() + w.slice(1)).join(" ") : "Untitled Story";
 }
 
@@ -4816,10 +5011,31 @@ export function LoreEntryRow({ collection, entry, index, status, save }) {
   );
 }
 
+/** "You're offline" -- the app used to have no idea the network was gone
+ *  (QA O-18: `navigator.onLine` appeared nowhere). Chapters already opened on
+ *  this device still read from its cache. */
+export function OfflineBanner() {
+  const [online, setOnline] = useState(() => (typeof navigator === "undefined" ? true : navigator.onLine !== false));
+  useEffect(() => {
+    const up = () => setOnline(true);
+    const down = () => setOnline(false);
+    window.addEventListener("online", up);
+    window.addEventListener("offline", down);
+    return () => { window.removeEventListener("online", up); window.removeEventListener("offline", down); };
+  }, []);
+  if (online) return null;
+  return (
+    <div className="offline-banner" role="status">
+      You're offline. Chapters you've opened on this device can still be read.
+    </div>
+  );
+}
+
 function Root() {
   return (
     <BrowserRouter>
       <AppProvider>
+        <OfflineBanner />
         <SessionWatcher />
         {/* The outermost net. Nothing below this can blank the app: the worst
             case is one screen replaced by a message and a way back. */}

@@ -104,7 +104,10 @@ export function signInMessage(code, name = "") {
   switch (code) {
     case "PIN_WRONG": return "That PIN isn't right.";
     case "PIN_REQUIRED": return `Enter ${who}'s PIN.`;
-    case "PIN_LOCKED": return "Too many wrong PINs. Try again later.";
+    // Locks are per device now (O2-07): a stranger's guesses elsewhere never lock
+    // a grown-up out of this one.
+    case "PIN_LOCKED": return "Too many wrong PINs on this device. Try again later, or ask Jonathan for a set-up code.";
+    case "PIN_SETUP_CLOSED": return "Setting up a new device with a PIN is paused for now. Ask Jonathan for a set-up code.";
     case "PIN_NOT_SET": return `${who} doesn't have a PIN yet. Jonathan sets one up first.`;
     case "PIN_FORMAT": return "A PIN is 4 to 8 numbers.";
     case "ADULT_REQUIRED": return "A grown-up has to set up this device.";

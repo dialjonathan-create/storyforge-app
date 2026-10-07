@@ -2422,3 +2422,53 @@ h3 {
 .load-failed .gold-button {
   margin-top: 12px;
 }
+
+/* --- Otherwise r2: a named close control on every sheet (O-31) ------------ */
+.sheet-close,
+.drawer-panel button.sheet-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 2;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(15, 25, 35, 0.72);
+  color: var(--text-secondary);
+  font-size: 1.4rem;
+  line-height: 1;
+  padding: 0;
+  margin: 0;
+}
+
+.sheet-close:focus-visible {
+  outline: 2px solid var(--gold-light);
+  outline-offset: 2px;
+}
+
+.sheet-panel > h2,
+.drawer-panel > h2:first-of-type {
+  padding-right: 52px;
+}
+
+/* --- offline (O-18) --------------------------------------------------------- */
+.offline-banner {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  padding: 8px 16px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--line);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+/* --- a long story title never runs under its buttons (O-30) ----------------- */
+.story-card h2 {
+  padding-right: 112px;
+  overflow-wrap: anywhere;
+}
