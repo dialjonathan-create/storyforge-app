@@ -18,17 +18,37 @@ function abilityUrl() {
   return (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_ABILITY_URL) || DEFAULT_ABILITY_URL;
 }
 
-export async function fetchVoices() {
-  try {
-    const res = await fetch(`${abilityUrl()}/storyforge/tts/voices`);
-    if (res.ok) {
-      const voices = await res.json();
-      if (Array.isArray(voices) && voices.length) return voices;
+// UI-09 (r3): the reader and the narration panel each asked for the voice list
+// on every mount -- two requests per chapter page, again on every chapter. The
+// list changes when the server is redeployed, not while a page is open, so it
+// is fetched once per page load and shared. Only a real answer is kept: a
+// failure (signed out, offline) is asked again next time.
+let voicesOnce = null;
+
+export function fetchVoices() {
+  if (voicesOnce) return voicesOnce;
+  const attempt = (async () => {
+    try {
+      const res = await fetch(`${abilityUrl()}/storyforge/tts/voices`);
+      if (res.ok) {
+        const voices = await res.json();
+        if (Array.isArray(voices) && voices.length) return { voices, keep: true };
+      }
+    } catch (err) {
+      // the drawer still offers the known voices
     }
-  } catch (err) {
-    // the drawer still offers the known voices
-  }
-  return FALLBACK_VOICES;
+    return { voices: FALLBACK_VOICES, keep: false };
+  })();
+  voicesOnce = attempt.then(({ voices, keep }) => {
+    if (!keep) voicesOnce = null;
+    return voices;
+  });
+  return voicesOnce;
+}
+
+// Test seam.
+export function __resetVoicesForTests() {
+  voicesOnce = null;
 }
 
 export async function synthesize(text, voice, speed = 1.0) {

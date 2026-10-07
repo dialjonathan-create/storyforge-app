@@ -187,6 +187,17 @@ h3 {
   font-size: 3rem;
 }
 
+/* UI-05: why the last sign-in ended, on the picker. */
+.signed-out-notice {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border: 1px solid rgba(240, 230, 211, 0.18);
+  border-radius: 14px;
+  color: var(--text-primary);
+  text-align: center;
+  line-height: 1.45;
+}
+
 .reader-name {
   font-family: Cinzel, Georgia, serif;
   font-size: 1.05rem;
@@ -355,6 +366,8 @@ h3 {
 .header-title,
 .reader-title {
   min-width: 0;
+  /* UI-03: a title that is one long word must not widen the header. */
+  overflow-wrap: anywhere;
   overflow: hidden;
   text-align: center;
   text-overflow: ellipsis;
@@ -525,6 +538,11 @@ h3 {
   border-radius: 18px;
   background: rgba(240, 230, 211, 0.06);
   font-size: 2.4rem;
+  /* UI-03: one glyph (clamped in main.jsx); a long cover string never grows
+     the box. */
+  overflow: hidden;
+  white-space: nowrap;
+  line-height: 1;
 }
 
 .card-copy h2,
@@ -598,6 +616,8 @@ h3 {
 }
 
 .universe-hero h1 {
+  max-width: 100%;
+  overflow-wrap: anywhere;
   margin: 6px 0 0;
   font-size: clamp(2rem, 11vw, 4rem);
 }
@@ -801,6 +821,8 @@ h3 {
 }
 
 .reading-column h1 {
+  max-width: 100%;
+  overflow-wrap: anywhere;
   margin: 10px 0 12px;
   text-align: center;
   font-size: clamp(2.2rem, 12vw, 4rem);
@@ -2471,4 +2493,29 @@ h3 {
 .story-card h2 {
   padding-right: 112px;
   overflow-wrap: anywhere;
+}
+
+/* UI-02: a pick being saved, or one that did not save, is said in the panel. */
+.choice-saving,
+.choice-error {
+  margin: 12px 0 0;
+  text-align: center;
+  line-height: 1.45;
+}
+
+.choice-saving {
+  color: var(--text-secondary);
+}
+
+.choice-error {
+  color: var(--text-primary);
+}
+
+.choice-panel button:disabled {
+  opacity: 0.6;
+}
+
+.write-chapter-card:focus {
+  outline: 2px solid var(--gold-light);
+  outline-offset: 4px;
 }
