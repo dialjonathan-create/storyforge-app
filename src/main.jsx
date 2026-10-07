@@ -415,10 +415,18 @@ export function friendlyError(error, fallback = "Something went wrong. Try again
   return { text: raw, errorId };
 }
 
-/** One line for the screen: the sentence, and the id small after it. */
+/** Is a child reading right now? (Otherwise r4 R4-07: an "Error inv_f431470d"
+ *  reference is for a grown-up to quote; on a child's screen it is noise.) */
+export function childReading() {
+  const who = currentSession()?.userId || getCurrentReaderId();
+  return isChildProfile(who);
+}
+
+/** One line for the screen: the sentence, and the id small after it -- never
+ *  for a child. */
 export function friendlyErrorText(error, fallback) {
   const { text, errorId } = friendlyError(error, fallback);
-  return errorId ? `${text} (Error ${errorId.slice(0, 12)})` : text;
+  return errorId && !childReading() ? `${text} (Error ${errorId.slice(0, 12)})` : text;
 }
 
 export const SIGNED_OUT_TEXT = "You're signed out on this device. Tap who's reading to sign in again.";
@@ -709,14 +717,42 @@ function SkeletonCards() {
  * library on bad wifi said "No universes yet. Create your first world." and
  * offered to make a new one. Empty and unreachable are different answers.
  */
-export function LoadFailed({ error, what = "this", onRetry }) {
-  const { text, errorId } = friendlyError(error, `Couldn't open ${what}. Try again.`);
+export function LoadFailed({ error, what = "this", onRetry, gone }) {
+  if (gone && isGone(error)) return <GoneNotice {...gone} />;
+  let { text, errorId } = friendlyError(error, `Couldn't open ${what}. Try again.`);
+  // The gate's "not yours" sentence names a story; on a world's page it is a world.
+  if (/world/.test(what) && error?.reason === "not_yours") text = "That world isn't in your library.";
+  const showId = errorId && !childReading();
   return (
     <div className="empty-state load-failed" role="alert">
       <h1>{error?.network ? "Couldn't reach the story server." : `Couldn't open ${what}.`}</h1>
       <p>{error?.network ? "Nothing is lost. Check the wifi, then try again." : text}</p>
-      {errorId && <p className="error-id">Error {errorId.slice(0, 12)}</p>}
+      {showId && <p className="error-id">Error {errorId.slice(0, 12)}</p>}
       {onRetry && <button className="gold-button" type="button" onClick={onRetry}>Try again</button>}
+    </div>
+  );
+}
+
+/** The server (or the story's own world) says it is not there: deleted, or a
+ *  link to something that never was. Otherwise r4 R4-07: a deep link to a
+ *  deleted story drew a stand-in "Story" and then "Couldn't open chapter 1.
+ *  Error inv_..." -- a page that pretended the story existed. */
+export function isGone(error) {
+  return !error?.network && (/^(story|universe)_not_found$/.test(String(error?.code || "")) || error?.status === 404);
+}
+
+export function storyGoneError() {
+  return new StoryRequestError("This story isn't here any more.", { code: "story_not_found", status: 404 });
+}
+
+export function GoneNotice({ what = "story", backTo = "/universes" }) {
+  const nav = useNavigate();
+  const noun = what === "world" ? "world" : "story";
+  return (
+    <div className="empty-state load-failed gone" role="alert">
+      <h1>This {noun} isn't here any more.</h1>
+      <p>{noun === "world" ? "It may have been deleted. Go back to your library." : "It may have been deleted. Go back to see the stories in this world."}</p>
+      <button className="gold-button" type="button" onClick={() => nav(backTo)}>Back</button>
     </div>
   );
 }
@@ -1047,7 +1083,7 @@ function UniverseDetail() {
     <Page>
       <AppHeader title={universe.title || "Universe"} backTo="/universes" />
       <section className="content universe-detail">
-        {loadError ? <LoadFailed error={loadError} what="this universe" onRetry={() => setAttempt((n) => n + 1)} /> : !data ? <SkeletonCards /> : (
+        {loadError ? <LoadFailed error={loadError} what="this world" gone={{ what: "world", backTo: "/universes" }} onRetry={isGone(loadError) || isRefusal(loadError) ? undefined : () => setAttempt((n) => n + 1)} /> : !data ? <SkeletonCards /> : (
           <>
             <div className="universe-hero">
               <div className="hero-icon">{coverGlyph(universe.coverIcon)}</div>
@@ -1628,7 +1664,14 @@ function ChapterReader() {
       .then((res) => {
         const found = (res.stories || []).find((s) => s.storyId === storyId);
         if (cancelled) return;
-        const loadedStory = found || { storyId, title: "Story", totalChapters: 1, currentChapter: 1 };
+        if (!found) {
+          // R4-07: the world answered and this story is not in it. Never a
+          // stand-in "Story" -- that drew chapter 1 of nothing.
+          forgetStoryOnDevice(storyId);
+          setStoryError(storyGoneError());
+          return;
+        }
+        const loadedStory = found;
         const saved = readPosition(readingGroup, storyId);
         const bookmark = readBookmark(storyId);
         const total = storyChapterLimit(loadedStory);
@@ -1654,7 +1697,9 @@ function ChapterReader() {
         }
         const saved = readPosition(readingGroup, storyId);
         const bookmark = readBookmark(storyId);
-        const landingChapter = resumeChapter(bookmark, saved) || 1;
+        // R4-08: the chapter this device last OPENED, not chapter 1 -- an opened
+        // chapter nobody scrolled has no saved position, only a cached copy.
+        const landingChapter = offlineLandingChapter(storyId, bookmark, saved);
         const fallbackStory = { storyId, title: "Story", totalChapters: landingChapter, currentChapter: landingChapter };
         setStory(fallbackStory);
         setReadingNow(initialReadingNow(fallbackStory, activeReaders));
@@ -2323,7 +2368,7 @@ function ChapterReader() {
     return (
       <Page className="waiting-page">
         <AppHeader title="Story" backTo={`/universes/${id}`} />
-        <LoadFailed error={storyError} what="this story" onRetry={isRefusal(storyError) ? undefined : () => setStoryAttempt((n) => n + 1)} />
+        <LoadFailed error={storyError} what="this story" gone={{ what: "story", backTo: `/universes/${id}` }} onRetry={isRefusal(storyError) || isGone(storyError) ? undefined : () => setStoryAttempt((n) => n + 1)} />
       </Page>
     );
   }
@@ -4429,6 +4474,25 @@ export function resumePlace(bookmark, saved) {
 
 export function resumeChapter(bookmark, saved) {
   return resumePlace(bookmark, saved)?.chapter || 0;
+}
+
+/** Where an OFFLINE reload of a story lands: the saved place when this device
+ *  holds that chapter and it is the newer fact, else the chapter most recently
+ *  opened here (the cache is newest-first), else the saved place, else 1. */
+export function offlineLandingChapter(storyId, bookmark, saved) {
+  const place = resumePlace(bookmark, saved);
+  let cached = [];
+  try {
+    cached = JSON.parse(localStorage.getItem(storyDataKey("chapter_cache", storyId)) || "[]");
+  } catch {
+    cached = [];
+  }
+  const latest = Array.isArray(cached) ? cached[0] : null;
+  const placeHeld = place && cached.some((item) => item.chapterNumber === place.chapter);
+  if (latest?.chapterNumber && (!placeHeld || (Number(latest.cachedAt) || 0) > (place.at || 0))) {
+    return Number(latest.chapterNumber);
+  }
+  return place?.chapter || 1;
 }
 
 function NewUniverse() {

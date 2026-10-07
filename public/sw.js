@@ -1,4 +1,8 @@
-const CACHE = "storyforge-v3";
+// R4-08: the build writes the bundle list and a build id over these markers
+// (build/precacheManifest.js). In `vite dev` they stay empty / "dev".
+const PRECACHE = /*__PRECACHE__*/[];
+const BUILD = /*__BUILD__*/"dev";
+const CACHE = `storyforge-v4-${BUILD}`;
 // v3 (Otherwise r3 UI-06): every navigation is answered with the app shell when
 // the network is down, so reloading a deep link offline opens the app (and its
 // on-device chapters) instead of the browser's "No internet" page. The old
@@ -8,7 +12,15 @@ const CACHE = "storyforge-v3";
 const SHELL = ["/", "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
+  // The shell must land; each bundle file is added on its own so one failure
+  // cannot keep the worker from installing. Precaching the bundle is what makes
+  // a FIRST visit readable offline (R4-08) -- the page that registered this
+  // worker fetched its bundle before the worker could see it.
+  event.waitUntil(
+    caches.open(CACHE)
+      .then((cache) => cache.addAll(SHELL).then(() => Promise.allSettled(PRECACHE.map((file) => cache.add(file)))))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener("activate", (event) => {

@@ -309,25 +309,96 @@ export async function signInProfile({ userId, pin }) {
 
 let refreshing = null;
 
-/** Refresh tokens rotate and a replay revokes the session, so only one refresh
- *  is ever in flight; everyone else waits for it. */
-export function refreshSession() {
+// Otherwise r4 R4-02 (2026-10-07): refresh tokens rotate and a replay revokes the
+// session, and the single-flight above was per TAB. Two tabs of one reader woke
+// with the same expired token, both refreshed, the second presented the token the
+// first had just rotated away -- and the server signed BOTH tabs out mid-chapter.
+// Now one refresh runs per DEVICE: a Web Lock (navigator.locks) where the browser
+// has it, a localStorage lease where it does not. Inside the lock the stored
+// session is read again: if another tab already refreshed, its pair is used and
+// nothing is sent. (The server also forgives the immediately previous token for a
+// few seconds, for the browser that has neither.)
+const REFRESH_LOCK_NAME = "otherwise-session-refresh";
+const REFRESH_LEASE_KEY = "otherwise_refresh_lease";
+const LEASE_MS = 10_000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withStorageLease(fn) {
+  const me = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const deadline = Date.now() + LEASE_MS;
+  for (;;) {
+    let held = null;
+    try {
+      held = JSON.parse(localStorage.getItem(REFRESH_LEASE_KEY) || "null");
+    } catch {
+      held = null;
+    }
+    if (!held || !(held.until > Date.now())) {
+      try {
+        localStorage.setItem(REFRESH_LEASE_KEY, JSON.stringify({ owner: me, until: Date.now() + LEASE_MS }));
+      } catch {
+        return fn(); // no storage at all: nothing to coordinate with
+      }
+      await sleep(15); // let a racing tab's write land, then see who won
+      let now = null;
+      try {
+        now = JSON.parse(localStorage.getItem(REFRESH_LEASE_KEY) || "null");
+      } catch {
+        now = null;
+      }
+      if (now && now.owner === me) break;
+    }
+    if (Date.now() > deadline) break; // a crashed holder: its lease ran out anyway
+    await sleep(50);
+  }
+  try {
+    return await fn();
+  } finally {
+    try {
+      const held = JSON.parse(localStorage.getItem(REFRESH_LEASE_KEY) || "null");
+      if (held && held.owner === me) localStorage.removeItem(REFRESH_LEASE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export function withRefreshLock(fn) {
+  const locks = typeof navigator !== "undefined" ? navigator.locks : null;
+  if (locks && typeof locks.request === "function") {
+    return locks.request(REFRESH_LOCK_NAME, { mode: "exclusive" }, () => fn());
+  }
+  return withStorageLease(fn);
+}
+
+/** Refresh the session -- once per device at a time. `seen` is the session the
+ *  caller found stale; if another tab has replaced it by the time the lock is
+ *  ours, that newer session is the answer and nothing is sent. */
+export function refreshSession(seen = currentSession()) {
   if (refreshing) return refreshing;
-  const s = currentSession();
-  if (!s) return Promise.reject(new SignInError("NO_SESSION"));
-  refreshing = post("/v1/auth/storyforge/refresh", { sessionId: s.sessionId, refreshToken: s.refreshToken })
-    .then((data) => {
+  if (!seen) return Promise.reject(new SignInError("NO_SESSION"));
+  refreshing = withRefreshLock(async () => {
+    const s = currentSession();
+    if (!s) throw new SignInError("NO_SESSION");
+    if (s.sessionId === seen.sessionId && s.accessToken !== seen.accessToken && !expired(s.expiresAt, 60_000)) {
+      return s; // another tab refreshed while this one waited
+    }
+    if (s.sessionId !== seen.sessionId) return s; // someone else signed in meanwhile
+    try {
+      const data = await post("/v1/auth/storyforge/refresh", { sessionId: s.sessionId, refreshToken: s.refreshToken });
       const next = { ...s, ...sessionFrom(data), child: s.child, refreshExpiresAt: data.refreshExpiresAt || s.refreshExpiresAt };
       write(SESSION_KEY, next);
       return next;
-    })
-    .catch((error) => {
+    } catch (error) {
       if (error.code !== "NETWORK") endSession(error.code);
       throw error;
-    })
-    .finally(() => {
-      refreshing = null;
-    });
+    }
+  }).finally(() => {
+    refreshing = null;
+  });
   return refreshing;
 }
 
@@ -384,12 +455,12 @@ export function installSessionFetch(target = globalThis) {
     if (!url.startsWith(baseUrl) || url.startsWith(`${baseUrl}/v1/auth/`)) return originalFetch(input, init);
     let session = currentSession();
     if (session && expired(session.expiresAt, 60_000)) {
-      session = await refreshSession().catch(() => currentSession());
+      session = await refreshSession(session).catch(() => currentSession());
     }
     let response = await originalFetch(input, withBearer(init, session));
     if (response.status === 401 && session) {
       try {
-        session = await refreshSession();
+        session = await refreshSession(session);
         response = await originalFetch(input, withBearer(init, session));
       } catch {
         /* the 401 stands; endSession has already told the app */
