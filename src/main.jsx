@@ -6,7 +6,7 @@ import "./styles.css";
 import NarrationPanel from "./NarrationPanel";
 import { fetchVoices } from "./kokoro";
 import StoryMap, { mappablePlaces } from "./StoryMap";
-import { configureAuth, currentSession, hasSessionFor, installSessionFetch, isChildProfile, SIGNED_OUT_EVENT } from "./auth";
+import { configureAuth, currentSession, hasSessionFor, installSessionFetch, isChildProfile, readerKey, signedOutMessage, SIGNED_OUT_EVENT, takeSignedOutReason } from "./auth";
 import { SignInSheet } from "./SignIn";
 
 // The build this browser is actually running, for when "did it deploy?" is
@@ -394,7 +394,7 @@ export function friendlyError(error, fallback = "Something went wrong. Try again
   const raw = String(error?.message || error || "").trim();
   const errorId = error?.errorId || errorIdOf(null, raw);
   if (error?.network) return { text: "Couldn't reach the story server. Check the wifi, then try again.", errorId: "" };
-  if (/not signed in/i.test(raw)) return { text: raw, errorId: "" };
+  if (/not signed in|signed out on this device/i.test(raw)) return { text: raw, errorId: "" };
   // A refusal says WHY in a sentence ("A grown-up has to do that.", "Only the
   // person who made this world can do that."). O2-10: every 403 used to read
   // "This story isn't open to this reader." -- for a pick, for a delete, for
@@ -421,6 +421,8 @@ export function friendlyErrorText(error, fallback) {
   return errorId ? `${text} (Error ${errorId.slice(0, 12)})` : text;
 }
 
+export const SIGNED_OUT_TEXT = "You're signed out on this device. Tap who's reading to sign in again.";
+
 async function execute(command, args = {}) {
   let response;
   try {
@@ -434,7 +436,9 @@ async function execute(command, args = {}) {
     throw new StoryRequestError("Couldn't reach the story server.", { network: true });
   }
   const data = await response.json().catch(() => ({}));
-  if (response.status === 401) throw new StoryRequestError("Otherwise is not signed in on this device (no token). Ask Jonathan.", { status: 401, code: "UNAUTHORIZED" });
+  // UI-05: plain words. This used to read "(no token). Ask Jonathan." -- a
+  // seven-year-old does not have a token and cannot ask about one.
+  if (response.status === 401) throw new StoryRequestError(SIGNED_OUT_TEXT, { status: 401, code: "UNAUTHORIZED" });
   if (!response.ok || data.ok === false || data.error) {
     const message = data.message || data.error || (response.status >= 500 ? "The story server had a problem." : "Otherwise request failed");
     throw new StoryRequestError(message, {
@@ -509,6 +513,17 @@ export function ReaderPicker() {
   const nav = useNavigate();
   const { users, setUsers, activeReaders, setActiveReaders } = useApp();
   const [pending, setPending] = useState(activeReaders);
+  // UI-05: why the last session ended, said once, in plain words -- a revoked
+  // or expired session used to drop the reader here with no reason at all.
+  const [signedOutNotice, setSignedOutNotice] = useState(() => signedOutMessage(takeSignedOutReason()));
+  useEffect(() => {
+    const heard = (event) => {
+      takeSignedOutReason();
+      setSignedOutNotice(signedOutMessage(event?.detail?.reason || "UNAUTHORIZED"));
+    };
+    window.addEventListener(SIGNED_OUT_EVENT, heard);
+    return () => window.removeEventListener(SIGNED_OUT_EVENT, heard);
+  }, []);
   useEffect(() => {
     // Nobody signed in yet: the family's names are already here, and the server
     // would only answer "sign in first".
@@ -544,6 +559,7 @@ export function ReaderPicker() {
   }
 
   function proceed(next) {
+    setSignedOutNotice("");
     localStorage.setItem("storyforge_reading_group", JSON.stringify(next));
     if (next.length === 1) localStorage.setItem("storyforge_default_reader", next[0]);
     else localStorage.removeItem("storyforge_default_reader");
@@ -556,6 +572,7 @@ export function ReaderPicker() {
       <section className="reader-shell">
         <Wordmark />
         <p className="subtitle">Who's reading?</p>
+        {signedOutNotice && <p className="signed-out-notice" role="status">{signedOutNotice}</p>}
         <div className="reader-grid">
           {users.map((user) => {
             const selected = pending.includes(user.userId);
@@ -565,8 +582,12 @@ export function ReaderPicker() {
                 key={user.userId}
                 onClick={() => toggle(user.userId)}
                 className={`reader-card ${selected ? "selected" : ""}`}
+                aria-pressed={selected}
               >
-                <span className="reader-check">✓</span>
+                {/* UI-07: only a chosen reader carries the tick. Every card
+                    used to print "✓" (hidden by CSS), so a screen reader read
+                    four ticks and the state of none. */}
+                {selected && <span className="reader-check" aria-hidden="true">✓</span>}
                 <span className="reader-emoji">{user.avatar}</span>
                 <span className="reader-name">{user.displayName}</span>
               </motion.button>
@@ -645,6 +666,23 @@ function AppHeader({ backTo, title, right }) {
       {right}
     </header>
   );
+}
+
+/** The first user-perceived character of a cover icon (UI-03): an emoji with
+ *  modifiers, a flag, or a letter -- never a run of text that overflows the
+ *  68-px tile. */
+export function coverGlyph(icon, fallback = "✦") {
+  const text = String(icon ?? "").trim();
+  if (!text) return fallback;
+  try {
+    if (typeof Intl !== "undefined" && Intl.Segmenter) {
+      const first = new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)[Symbol.iterator]().next();
+      if (!first.done) return first.value.segment;
+    }
+  } catch {
+    /* fall through */
+  }
+  return Array.from(text)[0] || fallback;
 }
 
 /** "1 story", "2 stories" (QA O-30: "1 chapters"). */
@@ -774,7 +812,7 @@ function UniverseList() {
                     </div>
                   )}
                   <div className="card-accent" />
-                  <div className="cover-icon" style={{ color: universe.coverColor }}>{universe.coverIcon || "✦"}</div>
+                  <div className="cover-icon" style={{ color: universe.coverColor }}>{coverGlyph(universe.coverIcon)}</div>
                   <div className="card-copy">
                     <h2>{universe.title}</h2>
                     <p>{universe.tagline || "A world waiting to be opened."}</p>
@@ -804,7 +842,8 @@ function UniverseList() {
 
 function lastUniversePosition(universe, readingGroup) {
   if (!universe?.universeId) return "";
-  const keys = Object.keys(localStorage).filter((key) => key.startsWith(`sf_pos_${readingGroup}_`));
+  const prefix = `${storyDataKey("pos", readingGroup)}_`;
+  const keys = Object.keys(localStorage).filter((key) => key.startsWith(prefix));
   return keys.length ? "recently" : "";
 }
 
@@ -1011,7 +1050,7 @@ function UniverseDetail() {
         {loadError ? <LoadFailed error={loadError} what="this universe" onRetry={() => setAttempt((n) => n + 1)} /> : !data ? <SkeletonCards /> : (
           <>
             <div className="universe-hero">
-              <div className="hero-icon">{universe.coverIcon || "✦"}</div>
+              <div className="hero-icon">{coverGlyph(universe.coverIcon)}</div>
               <h1>{universe.title}</h1>
               <p>{universe.tagline}</p>
               {/* The way into the universe itself. Every capability behind it
@@ -1513,6 +1552,20 @@ function ChapterReader() {
   const [chatSavedChapter, setChatSavedChapter] = useState(false);
   const [proseReady, setProseReady] = useState(true);
   const [chapterError, setChapterError] = useState(null);
+  const [storyError, setStoryError] = useState(null);
+  // UI-02: after a pick lands, the card it produced is brought into view and
+  // focused -- not the top of the page.
+  const writeCardRef = useRef(null);
+  const justShownRef = useRef(null);
+  const [focusWriteCard, setFocusWriteCard] = useState(false);
+  useEffect(() => {
+    if (!focusWriteCard || !writeCardRef.current) return;
+    setFocusWriteCard(false);
+    const card = writeCardRef.current;
+    try { card.scrollIntoView({ behavior: "smooth", block: "center" }); } catch { /* old browsers */ }
+    try { card.focus({ preventScroll: true }); } catch { card.focus(); }
+  });
+  const [storyAttempt, setStoryAttempt] = useState(0);
   const [chapterAttempt, setChapterAttempt] = useState(0);
   const [creation, setCreation] = useState(null);
   const [nextState, setNextState] = useState(null);
@@ -1567,6 +1620,7 @@ function ChapterReader() {
   useEffect(() => {
     let cancelled = false;
     setStory(null);
+    setStoryError(null);
     setChapter(null);
     setChapterNumber(null);
     setProgress(0);
@@ -1587,8 +1641,17 @@ function ChapterReader() {
         setCurrentStory(found);
         setChapterNumber(target);
       })
-      .catch(() => {
+      .catch((error) => {
         if (cancelled) return;
+        // Only an UNREACHABLE server earns the stand-in story (reading offline
+        // from the device, QA O-18). A server that answered "no" is the answer:
+        // UI-01 -- Keen's story.list was refused (403) and the stand-in sent him
+        // on to the chapter the device still held for Jonathan.
+        if (!error?.network) {
+          if (isRefusal(error)) forgetStoryOnDevice(storyId);
+          setStoryError(error || new StoryRequestError("forbidden", { status: 403 }));
+          return;
+        }
         const saved = readPosition(readingGroup, storyId);
         const bookmark = readBookmark(storyId);
         const landingChapter = resumeChapter(bookmark, saved) || 1;
@@ -1601,7 +1664,7 @@ function ChapterReader() {
     return () => {
       cancelled = true;
     };
-  }, [id, storyId, readingGroup, setCurrentStory]);
+  }, [id, storyId, readingGroup, setCurrentStory, storyAttempt]);
 
   useEffect(() => {
     execute("storyforge.universe.get.v1", { tenantId: "core", userId: "jonathan", universeId: id })
@@ -1624,7 +1687,14 @@ function ChapterReader() {
     setChapter(null);
     setChapterError(null);
     setNextState(null);
-    getChapter(id, storyId, chapterNumber)
+    // A chapter the server has just handed over (the wait's `complete`) is the
+    // server's answer already; asking again would only flash the page.
+    const handed = justShownRef.current;
+    justShownRef.current = null;
+    const load = handed && handed.storyId === storyId && handed.chapterNumber === chapterNumber
+      ? Promise.resolve(handed.chapter)
+      : getChapter(id, storyId, chapterNumber);
+    load
       .then((res) => {
         if (cancelled) return;
         setCreation(null);
@@ -1652,6 +1722,9 @@ function ChapterReader() {
           setChapter(kept);
           return;
         }
+        // Refused: getChapter has already forgotten the story on this device;
+        // the page forgets the pick it was holding too, and says no (UI-01).
+        if (isRefusal(error)) setPendingWrite(null);
         const missing = !error?.network && /chapter_not_found|not_found|does not exist/i.test(`${error?.code || ""} ${error?.message || ""}`);
         const status = String(story?.creationStatus || story?.status || "");
         if (missing && chapterNumber === 1 && (status === "creating" || status === "failed" || !Number(story?.totalChapters))) {
@@ -1813,7 +1886,8 @@ function ChapterReader() {
     // `recording` is the gap between the tap and the server's answer. Nothing is
     // queued yet, and chapter.status.v1 answers "generating" for a chapter it
     // has never heard of, so polling here invents a generation.
-    if (!waiting?.chapterNumber || waiting.recording) return undefined;
+    // A pick that did not save is not a chapter being written either.
+    if (!waiting?.chapterNumber || waiting.recording || waiting.pickFailed) return undefined;
     let cancelled = false;
     let finished = false;
     const targetChapter = waiting.chapterNumber;
@@ -1823,7 +1897,8 @@ function ChapterReader() {
     // the server already said it started.
     let sawReshaping = Boolean(waiting.sawReshaping);
     function showChapter(next) {
-      cacheChapter(`sf_chapter_cache_${storyId}`, next);
+      cacheChapter(storyDataKey("chapter_cache", storyId), next);
+      justShownRef.current = { storyId, chapterNumber: targetChapter, chapter: next };
       setChapter(next);
       setChapterNumber(targetChapter);
       setWaiting(null);
@@ -1961,6 +2036,7 @@ function ChapterReader() {
         setPendingWrite(pending);
         writePendingWrite(storyId, pending);
         setWaiting(null);
+        setFocusWriteCard(true);
         return;
       }
       setWaiting({ chapterNumber: Number(res?.chapterNumber) || nextChapter, startedAt: Date.now(), messageIndex: 0 });
@@ -2032,7 +2108,7 @@ function ChapterReader() {
       if (res?.ok === false) throw new StoryRequestError(res.message || res.error || "not applied", { code: res.error });
       setReshapeProposal(null);
       const fresh = await execute("storyforge.chapter.get.v1", { tenantId: "core", userId: "jonathan", universeId: id, storyId, chapterNumber });
-      cacheChapter(`sf_chapter_cache_${storyId}`, fresh);
+      cacheChapter(storyDataKey("chapter_cache", storyId), fresh);
       setChapter(fresh);
       setReshapedPulse(true);
       setTimeout(() => setReshapedPulse(false), 1800);
@@ -2227,7 +2303,7 @@ function ChapterReader() {
       // From the server: the device cache still holds the words before the
       // change, and getChapter answers from it first (r2: "Use this" on a
       // revision, and the page kept the old chapter).
-      getChapter(id, storyId, chapterNumber, { fresh: true })
+      getChapter(id, storyId, chapterNumber)
         .then((res) => setChapter(res))
         .catch(() => {});
     }
@@ -2243,6 +2319,14 @@ function ChapterReader() {
       />
     );
   }
+  if (storyError) {
+    return (
+      <Page className="waiting-page">
+        <AppHeader title="Story" backTo={`/universes/${id}`} />
+        <LoadFailed error={storyError} what="this story" onRetry={isRefusal(storyError) ? undefined : () => setStoryAttempt((n) => n + 1)} />
+      </Page>
+    );
+  }
   if (chapterError) {
     return (
       <Page className="waiting-page">
@@ -2256,7 +2340,10 @@ function ChapterReader() {
   // chapter they have since paged back to.
   const awaitingWrite = Boolean(pendingWrite?.chapterNumber && pendingWrite.chapterNumber === chapterNumber + 1);
   const waitMessages = waiting?.kind === "reshape" ? RESHAPE_WAIT_MESSAGES : CHAPTER_WAIT_MESSAGES;
-  if (waiting) {
+  // Saving a pick, or a pick that did not save, is said in the choice panel;
+  // the chapter stays on the page (UI-02).
+  const pickInline = Boolean(waiting && waiting.kind !== "reshape" && (waiting.recording || waiting.pickFailed));
+  if (waiting && !pickInline) {
     return (
       <WaitingState
         text={waiting.recording ? "Saving what you picked..." : (waiting.kind !== "reshape" && progressText(waiting.progress, waiting.chapterNumber)) || waitMessages[waiting.messageIndex || 0]}
@@ -2333,6 +2420,7 @@ function ChapterReader() {
             confuse it with. */}
         {awaitingWrite ? (
           <WriteNextChapterCard
+            cardRef={writeCardRef}
             pending={pendingWrite}
             busy={writeBusy}
             error={writeError?.text}
@@ -2346,7 +2434,16 @@ function ChapterReader() {
             {choicesVisible && chapter?.choices?.length > 0 && !chapter.choiceMade && (
               <WhosReading readers={storyReaders} selected={readingNow} onChange={changeReadingNow} users={users} />
             )}
-            <ChoicePanel visible={choicesVisible} chapter={chapter} readers={orderedReaders(readingNow).length ? readingNow : activeReaders} onChoose={choose} showTooltip={showChoiceTooltip} onDismissTooltip={() => setShowChoiceTooltip(false)} />
+            <ChoicePanel
+              visible={choicesVisible}
+              chapter={chapter}
+              readers={orderedReaders(readingNow).length ? readingNow : activeReaders}
+              onChoose={choose}
+              showTooltip={showChoiceTooltip}
+              onDismissTooltip={() => setShowChoiceTooltip(false)}
+              saving={pickInline && Boolean(waiting?.recording)}
+              error={pickInline && waiting?.pickFailed ? waiting.error : ""}
+            />
           </>
         )}
         {/* A way on that is not a swipe or a drawer (QA O-17): the next
@@ -2518,6 +2615,17 @@ const PROSE_DIRECTIVE = /<!--[\s\S]*?-->/g;
 /** A scene break, in either of the two spellings the prose uses. */
 const SCENE_BREAK = /^\s*(?:\*\*\*|---|—\s*◈\s*—|◈)\s*$/;
 
+/** UI-08: an underscore between two letters or digits is part of a word
+ *  (snake_case, file_name_v2), never emphasis -- the CommonMark rule. Checked
+ *  around a match rather than with a lookbehind, which older iPad Safari
+ *  cannot parse (a SyntaxError there would take down the whole bundle). */
+const WORD_CHAR = /[\p{L}\p{N}]/u;
+export function intrawordUnderscore(source, start, end) {
+  const text = String(source ?? "");
+  if (text[start] !== "_" && text[end - 1] !== "_") return false;
+  return WORD_CHAR.test(text[start - 1] || "") || WORD_CHAR.test(text[end] || "");
+}
+
 /** Markdown emphasis, as one scan rather than a split. */
 const MD_SPAN = /(\*\*|__)(?=\S)([\s\S]*?\S)\1|(\*|_)(?=\S)([^*_\n]*?\S)\3|`([^`\n]+)`/g;
 
@@ -2557,6 +2665,11 @@ export function proseTokens(text, entities, { words = false } = {}) {
   let at = 0;
   MD_SPAN.lastIndex = 0;
   for (let match = MD_SPAN.exec(source); match; match = MD_SPAN.exec(source)) {
+    if ((match[1] === "__" || match[3] === "_") && intrawordUnderscore(source, match.index, match.index + match[0].length)) {
+      // Not emphasis: leave it in the plain text and look again one further on.
+      MD_SPAN.lastIndex = match.index + 1;
+      continue;
+    }
     if (match.index > at) emphasised.push({ kind: "plain", text: source.slice(at, match.index) });
     if (match[2] != null) emphasised.push({ kind: "strong", text: match[2] });
     else if (match[4] != null) emphasised.push({ kind: "em", text: match[4] });
@@ -2813,6 +2926,15 @@ function renderInline(text, keyPrefix = "i") {
   const parts = String(text ?? "").split(MD_INLINE).filter((part) => part !== "");
   return parts.map((part, index) => {
     const key = `${keyPrefix}-${index}`;
+    // UI-08: `snake_case_name` splits as "snake" / "_case_" / "name"; an
+    // underscore run with a letter or digit against it is part of the word.
+    if (part[0] === "_" && part.length > 1) {
+      const before = parts[index - 1] || "";
+      const after = parts[index + 1] || "";
+      if (WORD_CHAR.test(before.slice(-1)) || WORD_CHAR.test(after.slice(0, 1))) {
+        return <React.Fragment key={key}>{part}</React.Fragment>;
+      }
+    }
     if (/^\*\*[^*]+\*\*$/.test(part) || /^__[^_]+__$/.test(part)) {
       return <strong key={key}>{part.slice(2, -2)}</strong>;
     }
@@ -3112,11 +3234,11 @@ function ChoicesProposalCard({ proposal, busy, onApprove, onDismiss }) {
  * have tapped this, because this is not on the screen until the choice is
  * already recorded and the choices are gone.
  */
-function WriteNextChapterCard({ pending, busy, error, detail, onWrite, children }) {
+function WriteNextChapterCard({ pending, busy, error, detail, onWrite, children, cardRef }) {
   if (!pending?.chapterNumber) return null;
   const n = pending.chapterNumber;
   return (
-    <section className="proposal-card write-chapter-card" aria-label={`Write chapter ${n}`}>
+    <section className="proposal-card write-chapter-card" aria-label={`Write chapter ${n}`} ref={cardRef} tabIndex={-1}>
       <div className="proposal-kicker">Chapter {n} is not written yet</div>
       {pending.choiceText && <p className="write-chapter-pick">You picked: “{pending.choiceText}”</p>}
       {!pending.narratorOnly && children}
@@ -3166,7 +3288,13 @@ function SuggestedReplies({ replies, onPick, disabled }) {
   );
 }
 
-function ChoicePanel({ visible, chapter, readers, onChoose, showTooltip, onDismissTooltip }) {
+/** The options at the end of a chapter.
+ *
+ * UI-02 (r3): a tap used to swap the whole page for a "Saving what you
+ * picked..." screen, which unmounted the chapter and dropped the reader at the
+ * top of it. Saving is now said HERE, in the panel, with the buttons held, and
+ * a pick that did not save says so here too -- the chapter never leaves. */
+function ChoicePanel({ visible, chapter, readers, onChoose, showTooltip, onDismissTooltip, saving = false, error = "" }) {
   if (!chapter?.choices?.length || chapter.choiceMade) return null;
   return (
     <motion.section
@@ -3184,11 +3312,15 @@ function ChoicePanel({ visible, chapter, readers, onChoose, showTooltip, onDismi
           animate={visible ? { opacity: 1, y: 0 } : { opacity: 0, y: 16 }}
           transition={{ delay: i * 0.15 }}
           whileTap={{ scale: 0.99 }}
-          onClick={() => onChoose(choice)}
+          disabled={saving}
+          aria-disabled={saving || undefined}
+          onClick={() => { if (!saving) onChoose(choice); }}
         >
           {choice.text || choice}
         </motion.button>
       ))}
+      {saving && <p className="choice-saving" role="status">Saving what you picked…</p>}
+      {!saving && error && <p className="choice-error" role="alert">{error}</p>}
     </motion.section>
   );
 }
@@ -3391,9 +3523,53 @@ export function mergeConversationHistory(history, local) {
   return [...older.slice(0, older.length - overlap), ...current];
 }
 
+const FOCUSABLE = 'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** A modal sheet keeps the keyboard inside it (UI-07).
+ *
+ * The chat sheet opened over the chapter and left focus on the 💬 button
+ * behind it: Tab walked the hidden chapter, and a screen reader never heard
+ * that a dialog had opened. While `active`, focus moves into `ref` (the
+ * composer if there is one), Tab and Shift+Tab wrap inside it, and closing
+ * puts focus back where it was. */
+export function useFocusTrap(active, ref) {
+  useEffect(() => {
+    if (!active) return undefined;
+    const previous = typeof document !== "undefined" ? document.activeElement : null;
+    const items = () => [...(ref.current?.querySelectorAll(FOCUSABLE) || [])];
+    const first = ref.current?.querySelector("textarea:not([disabled])") || items()[0] || ref.current;
+    try { first?.focus({ preventScroll: true }); } catch { first?.focus?.(); }
+    const onKey = (event) => {
+      if (event.key !== "Tab" || !ref.current) return;
+      const list = items();
+      if (!list.length) { event.preventDefault(); return; }
+      const head = list[0];
+      const tail = list[list.length - 1];
+      const inside = ref.current.contains(document.activeElement);
+      if (event.shiftKey && (document.activeElement === head || !inside)) {
+        event.preventDefault();
+        tail.focus();
+      } else if (!event.shiftKey && (document.activeElement === tail || !inside)) {
+        event.preventDefault();
+        head.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      if (previous && typeof previous.focus === "function" && document.contains(previous)) {
+        try { previous.focus({ preventScroll: true }); } catch { previous.focus(); }
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
+}
+
 function StoryChatSheet({ thread, busy, onSend, onClose, onApprove, onDismiss, onApproveChoices = () => {}, onDismissChoices = () => {} }) {
   const [text, setText] = useState("");
   const scrollRef = useRef(null);
+  const panelRef = useRef(null);
+  useFocusTrap(Boolean(thread), panelRef);
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [thread, busy]);
@@ -3403,7 +3579,7 @@ function StoryChatSheet({ thread, busy, onSend, onClose, onApprove, onDismiss, o
   return (
     <motion.div className="bottom-sheet" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <button className="sheet-shade" onClick={onClose} aria-label="Close" />
-      <motion.section className="sheet-panel chat-sheet" role="dialog" aria-label="Talk to the story" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}>
+      <motion.section ref={panelRef} tabIndex={-1} className="sheet-panel chat-sheet" role="dialog" aria-modal="true" aria-label="Talk to the story" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}>
         <SheetClose onClose={onClose} />
         <h2>Talk to the story</h2>
         {/* The transcript is the only thing that scrolls. The panel used to
@@ -3887,16 +4063,44 @@ export function restoreReadingPosition({ bookmark, saved, chapterNumber, doc = d
   return "none";
 }
 
+/** Who the device is keeping story data for right now: the signed-in reader
+ *  (UI-01). Every story key below is under this id; see auth.js readerKey. */
+function dataOwner() {
+  return currentSession()?.userId || currentReaderId || "";
+}
+
+export function storyDataKey(kind, storyId, owner = dataOwner()) {
+  return readerKey(owner, kind, storyId);
+}
+
+/** A story this reader was refused: nothing of it stays on the device. */
+export function forgetStoryOnDevice(storyId, owner = dataOwner()) {
+  if (!storyId) return;
+  try {
+    const prefixes = ["chapter_cache", "pending_write", "bookmark"].map((kind) => readerKey(owner, kind, storyId));
+    const posPrefix = readerKey(owner, "pos", "");
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i += 1) keys.push(localStorage.key(i));
+    for (const key of keys) {
+      if (!key) continue;
+      if (prefixes.includes(key) || (key.startsWith(`${posPrefix}_`) && key.endsWith(`_${storyId}`))) localStorage.removeItem(key);
+    }
+  } catch {
+    /* storage unavailable: there is nothing kept to forget */
+  }
+}
+
 function readPosition(group, storyId) {
   try {
-    return JSON.parse(localStorage.getItem(`sf_pos_${group}_${storyId}`) || "{}");
+    return JSON.parse(localStorage.getItem(storyDataKey("pos", `${group}_${storyId}`)) || "{}");
   } catch {
     return {};
   }
 }
 
 function writePosition(group, storyId, chapter, scrollPercent) {
-  localStorage.setItem(`sf_pos_${group}_${storyId}`, JSON.stringify({ chapter, scrollPercent, lastRead: Date.now() }));
+  const key = storyDataKey("pos", `${group}_${storyId}`);
+  if (key) localStorage.setItem(key, JSON.stringify({ chapter, scrollPercent, lastRead: Date.now() }));
 }
 
 // 2026-08-27: the passive position above is keyed by readingGroup (whoever is
@@ -3909,14 +4113,15 @@ function writePosition(group, storyId, chapter, scrollPercent) {
 // deliberate "we stopped here" intent rather than ambient scroll tracking.
 function readBookmark(storyId) {
   try {
-    return JSON.parse(localStorage.getItem(`sf_bookmark_${storyId}`) || "null");
+    return JSON.parse(localStorage.getItem(storyDataKey("bookmark", storyId)) || "null");
   } catch {
     return null;
   }
 }
 
 function writeBookmark(storyId, bookmark) {
-  localStorage.setItem(`sf_bookmark_${storyId}`, JSON.stringify(bookmark));
+  const key = storyDataKey("bookmark", storyId);
+  if (key) localStorage.setItem(key, JSON.stringify(bookmark));
 }
 
 // A choice that has been recorded and is waiting for somebody to ask for the
@@ -3929,7 +4134,7 @@ function writeBookmark(storyId, bookmark) {
 // switch and a closed tab.
 function readPendingWrite(storyId) {
   try {
-    const value = JSON.parse(localStorage.getItem(`sf_pending_write_${storyId}`) || "null");
+    const value = JSON.parse(localStorage.getItem(storyDataKey("pending_write", storyId)) || "null");
     return value && value.chapterNumber ? value : null;
   } catch {
     return null;
@@ -3938,8 +4143,10 @@ function readPendingWrite(storyId) {
 
 function writePendingWrite(storyId, pending) {
   try {
-    if (pending) localStorage.setItem(`sf_pending_write_${storyId}`, JSON.stringify(pending));
-    else localStorage.removeItem(`sf_pending_write_${storyId}`);
+    const key = storyDataKey("pending_write", storyId);
+    if (!key) return;
+    if (pending) localStorage.setItem(key, JSON.stringify(pending));
+    else localStorage.removeItem(key);
   } catch {
     // Private mode. The card is still correct for this session.
   }
@@ -3984,41 +4191,38 @@ function writeChapterMessage(error, chapterNumber) {
   if (/no_recorded_choice/i.test(raw)) return { text: `The story did not keep your pick. Tap what happens next again.`, detail: raw };
   if (/already_generating|already_complete/i.test(raw)) return { text: `Chapter ${n} is already being written. It will be here soon.`, detail: "" };
   if (/awaiting_narrator/i.test(raw)) return { text: `A grown-up has to ask for chapter ${n}.`, detail: "" };
-  if (/not signed in/i.test(raw)) return { text: raw, detail: "" };
+  if (/not signed in|signed out on this device/i.test(raw)) return { text: raw, detail: "" };
   return { text: `Chapter ${n} was not written. Nothing is lost — your pick is saved. Try again in a minute.`, detail: raw };
 }
 
 function cachedChapter(storyId, chapterNumber) {
   try {
-    const cached = JSON.parse(localStorage.getItem(`sf_chapter_cache_${storyId}`) || "[]");
+    const cached = JSON.parse(localStorage.getItem(storyDataKey("chapter_cache", storyId)) || "[]");
     return cached.find((item) => item.chapterNumber === chapterNumber)?.chapter || null;
   } catch {
     return null;
   }
 }
 
-async function getChapter(universeId, storyId, chapterNumber, { fresh = false } = {}) {
-  const cacheKey = `sf_chapter_cache_${storyId}`;
-  if (fresh) {
-    const chapter = await execute("storyforge.chapter.get.v1", { tenantId: "core", userId: "jonathan", universeId, storyId, chapterNumber });
-    cacheChapter(cacheKey, chapter);
-    return chapter;
-  }
+/** Is this failure the server saying no (as opposed to not being reached)? */
+export function isRefusal(error) {
+  return !error?.network && (error?.status === 401 || error?.status === 403 || /^forbidden$/i.test(String(error?.code || "")));
+}
+
+/** One chapter, FROM THE SERVER. The device copy is read only when the server
+ *  could not be reached (the reader's catch, QA O-18) -- never in front of the
+ *  server, and never after the server said no (UI-01: the old cache-first path
+ *  showed a grown-up's private chapter to a child and swallowed the 403). A
+ *  refusal forgets everything this reader kept about the story. */
+export async function getChapter(universeId, storyId, chapterNumber, { run = execute } = {}) {
   try {
-    const cached = JSON.parse(localStorage.getItem(cacheKey) || "[]");
-    const hit = cached.find((item) => item.chapterNumber === chapterNumber);
-    if (hit?.chapter) {
-      execute("storyforge.chapter.get.v1", { tenantId: "core", userId: "jonathan", universeId, storyId, chapterNumber })
-        .then((fresh) => cacheChapter(cacheKey, fresh))
-        .catch(() => {});
-      return hit.chapter;
-    }
-  } catch {
-    // Ignore broken local cache; the network remains source of truth.
+    const chapter = await run("storyforge.chapter.get.v1", { tenantId: "core", userId: "jonathan", universeId, storyId, chapterNumber });
+    cacheChapter(storyDataKey("chapter_cache", storyId), chapter);
+    return chapter;
+  } catch (error) {
+    if (isRefusal(error)) forgetStoryOnDevice(storyId);
+    throw error;
   }
-  const chapter = await execute("storyforge.chapter.get.v1", { tenantId: "core", userId: "jonathan", universeId, storyId, chapterNumber });
-  cacheChapter(cacheKey, chapter);
-  return chapter;
 }
 
 /** The newest held revision or reshape of this chapter, as a card's proposal,
@@ -4131,7 +4335,7 @@ export function chapterPollStep(kind, status, sawReshaping = false, reshapeId = 
 export const CHAPTER_CACHE_SIZE = 12;
 
 function cacheChapter(cacheKey, chapter) {
-  if (!chapter?.chapterNumber) return;
+  if (!cacheKey || !chapter?.chapterNumber) return;
   try {
     const current = JSON.parse(localStorage.getItem(cacheKey) || "[]").filter((item) => item.chapterNumber !== chapter.chapterNumber);
     // Enough to keep reading on a plane: every chapter opened recently, not
@@ -4376,7 +4580,9 @@ function NewStory() {
       setStep(2);
       return;
     }
-    const res = await execute("storyforge.story.questions.v1", { tenantId: "core", userId: "jonathan", description, readingGroup: activeReaders });
+    // The universe the story is for: the server checks it may be read before
+    // it answers (supervisor #2015 requires it; without it the call is refused).
+    const res = await execute("storyforge.story.questions.v1", { tenantId: "core", userId: "jonathan", universeId: id, description, readingGroup: activeReaders });
     setQuestions(res.questions || "1. What feeling should this story leave behind?");
     setStep(2);
   }

@@ -55,12 +55,115 @@ function write(key, value) {
   }
 }
 
-// An older build let a token be pasted into localStorage. It is nobody's
-// identity any more; leaving it there would only invite reusing it.
-try {
-  if (typeof localStorage !== "undefined") localStorage.removeItem(LEGACY_TOKEN_KEY);
-} catch {
-  /* ignore */
+
+// --- what this device keeps for ONE reader ----------------------------------
+//
+// Otherwise r3 UI-01 (2026-10-06, P1). The chapter cache was keyed by story
+// alone (`sf_chapter_cache_<storyId>`), survived every sign-out and was read
+// BEFORE the server: Jonathan read a private story on the family iPad, Keen
+// tapped his name, opened the same link, and the reader showed Jonathan's
+// chapter from the device while the server was refusing Keen (403, swallowed).
+//
+// Now everything the reader keeps about a story -- chapters, the pick waiting
+// to be written, the bookmark (it holds a line of prose), the scroll position --
+// lives under the signed-in reader's id, and all of it is wiped whenever the
+// person on this device changes, signs out, or their session ends. Text size and
+// the narrator voice are preferences, not story content, and stay.
+export const READER_DATA_PREFIX = "sf_u_";
+// The keys the reader used before UI-01: not scoped to anybody. Never read
+// again; removed on load so a device that ran the old build forgets them.
+export const LEGACY_READER_PREFIXES = ["sf_chapter_cache_", "sf_pending_write_", "sf_bookmark_", "sf_pos_"];
+const READER_OWNER_KEY = "otherwise_reader_data_owner";
+const SIGNED_OUT_REASON_KEY = "otherwise_signed_out_reason";
+
+function storageKeys() {
+  try {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i += 1) keys.push(localStorage.key(i));
+    return keys.filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/** `sf_u_<userId>__<kind>_<rest>` -- one reader's copy of one thing. */
+export function readerKey(userId, kind, rest = "") {
+  const who = String(userId || "").trim().toLowerCase();
+  if (!who) return "";
+  return `${READER_DATA_PREFIX}${who}__${kind}${rest !== "" ? `_${rest}` : ""}`;
+}
+
+/** Forget every reader's stories on this device (and the pre-UI-01 keys). */
+export function wipeReaderData() {
+  for (const key of storageKeys()) {
+    if (key.startsWith(READER_DATA_PREFIX) || LEGACY_READER_PREFIXES.some((p) => key.startsWith(p))) {
+      try { localStorage.removeItem(key); } catch { /* ignore */ }
+    }
+  }
+  try { localStorage.removeItem(READER_OWNER_KEY); } catch { /* ignore */ }
+}
+
+/** Remove only the old unscoped keys (on load; nobody's data is lost). */
+function wipeLegacyReaderData() {
+  for (const key of storageKeys()) {
+    if (LEGACY_READER_PREFIXES.some((p) => key.startsWith(p))) {
+      try { localStorage.removeItem(key); } catch { /* ignore */ }
+    }
+  }
+}
+
+/** The person whose data the device holds is about to be `userId`. Anybody
+ *  else's goes first. */
+function claimReaderData(userId) {
+  const who = String(userId || "").trim().toLowerCase();
+  let owner = "";
+  try { owner = localStorage.getItem(READER_OWNER_KEY) || ""; } catch { /* ignore */ }
+  if (owner !== who) wipeReaderData();
+  try {
+    if (who) localStorage.setItem(READER_OWNER_KEY, who);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Why the last session ended, in words for the picker (UI-05). Read once. */
+export function signedOutMessage(reason) {
+  switch (String(reason || "")) {
+    case "SESSION_REVOKED":
+    case "REFRESH_REPLAYED":
+    case "SESSION_NOT_FOUND":
+      return "You were signed out on this device. Tap who's reading to sign in again.";
+    case "SESSION_EXPIRED":
+    case "SESSION_IDLE":
+    case "REFRESH_FAILED":
+    case "TOKEN_REFRESH_FAILED":
+      return "Your sign-in ran out. Tap who's reading to sign in again.";
+    case "DEVICE_REVOKED":
+    case "DEVICE_NOT_ENROLLED":
+      return "This device was removed from Otherwise. A grown-up needs to set it up again.";
+    case "SIGNED_OUT":
+      return "";
+    default:
+      return reason ? "You're signed out on this device. Tap who's reading to sign in again." : "";
+  }
+}
+
+export function takeSignedOutReason() {
+  try {
+    const reason = sessionStorage.getItem(SIGNED_OUT_REASON_KEY) || "";
+    sessionStorage.removeItem(SIGNED_OUT_REASON_KEY);
+    return reason;
+  } catch {
+    return "";
+  }
+}
+
+function rememberSignedOutReason(reason) {
+  try {
+    if (reason) sessionStorage.setItem(SIGNED_OUT_REASON_KEY, String(reason));
+  } catch {
+    /* ignore */
+  }
 }
 
 export function currentSession() {
@@ -164,6 +267,8 @@ function deviceName() {
 
 async function replaceSession(next) {
   const previous = currentSession();
+  // A different person now holds the device: what the last one read goes.
+  claimReaderData(next?.userId);
   write(SESSION_KEY, next);
   // The person who was signed in before is signed OUT, not merely forgotten
   // here: a grown-up's session must not outlive the child taking over the iPad.
@@ -228,6 +333,8 @@ export function refreshSession() {
 
 function endSession(reason) {
   write(SESSION_KEY, null);
+  wipeReaderData();
+  rememberSignedOutReason(reason || "UNAUTHORIZED");
   if (reason === "DEVICE_REVOKED" || reason === "DEVICE_NOT_ENROLLED") write(DEVICE_KEY, null);
   try {
     window.dispatchEvent(new CustomEvent(SIGNED_OUT_EVENT, { detail: { reason } }));
@@ -239,6 +346,7 @@ function endSession(reason) {
 export async function signOut() {
   const s = currentSession();
   write(SESSION_KEY, null);
+  wipeReaderData();
   if (s) await post("/v1/auth/storyforge/signout", { sessionId: s.sessionId, refreshToken: s.refreshToken }).catch(() => {});
 }
 
@@ -291,6 +399,23 @@ export function installSessionFetch(target = globalThis) {
   };
   wrapped.__otherwiseSession = true;
   target.fetch = wrapped;
+}
+
+// An older build let a token be pasted into localStorage. It is nobody's
+// identity any more; leaving it there would only invite reusing it. And the
+// pre-UI-01 story caches belonged to nobody in particular, so they go too; a
+// device whose stored data belongs to someone other than the session's reader
+// (or to anybody, with nobody signed in) is cleaned before anything reads it.
+try {
+  if (typeof localStorage !== "undefined") {
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
+    wipeLegacyReaderData();
+    const s = currentSession();
+    if (s) claimReaderData(s.userId);
+    else if (localStorage.getItem(READER_OWNER_KEY)) wipeReaderData();
+  }
+} catch {
+  /* ignore */
 }
 
 // Test seam.

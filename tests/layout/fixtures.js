@@ -17,6 +17,12 @@ export const CORRUPTED = CLEAN.replace(/\*/g, "").replace(/ /g, "");
  *  been seen to fail is not known to work. */
 export const TOO_WIDE = "__canary__";
 
+/** UI-03 (r3, 2026-10-06): one unbroken word, the shape the audit used for a
+ *  universe title, a chapter title and a header -- each of which widened the
+ *  page before overflow-wrap:anywhere. The entry renders it in all three. */
+export const LONG_WORD = "Pneumonoultramicroscopicsilicovolcanoconiosis".repeat(3);
+export const LONG_COVER = "🧭🧭🧭🧭🧭 a cover string that is not one glyph at all";
+
 export const FIXTURES = {
   clean: CLEAN,
   // A long unbroken URL-ish token, which is the other way prose widens a page.
@@ -24,5 +30,6 @@ export const FIXTURES = {
   twoEntities: "Keen looked at Adele. Adele did not look back at Keen.",
   sceneBreak: "Before.\n***\nAfter.",
   corrupted: CORRUPTED,
+  longWord: `${LONG_WORD} began the chapter.`,
   canary: TOO_WIDE,
 };

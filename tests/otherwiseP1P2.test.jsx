@@ -244,7 +244,8 @@ describe("P2: long operations do not lose their answer to a client timeout", () 
         : { ok: true, status: "complete" }),
     });
     localStorage.setItem("storyforge_default_reader", "jonathan");
-    localStorage.setItem("sf_pending_write_s1", JSON.stringify({ chapterNumber: 4, choiceText: "Wait" }));
+    // Scoped to the reader since r3 UI-01 (no session here: the stored reader).
+    localStorage.setItem("sf_u_jonathan__pending_write_s1", JSON.stringify({ chapterNumber: 4, choiceText: "Wait" }));
     vi.resetModules();
     const fresh = await import("../src/main.jsx");
     render(
