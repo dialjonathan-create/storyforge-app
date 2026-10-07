@@ -17,6 +17,13 @@ import {
 //
 // The PIN is sent to the server and nowhere else; it is never stored here.
 
+/** A set-up code as the server minted it: "ABCD-EFGH". Typed any way --
+ *  lower case, spaces, no dash -- it is sent in that one shape. */
+export function formatSetupCode(input) {
+  const raw = String(input || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+  return raw.length > 4 ? `${raw.slice(0, 4)}-${raw.slice(4)}` : raw;
+}
+
 function nameOf(users, id) {
   return (users || []).find((u) => u.userId === id)?.displayName || id;
 }
@@ -26,6 +33,7 @@ export function SignInSheet({ who, users, onDone, onCancel }) {
   const [step, setStep] = useState(() => (child ? (isDeviceEnrolled() ? "working" : "setup") : "pin"));
   const [grownUp, setGrownUp] = useState(ADULT_PROFILES[0]);
   const [pin, setPin] = useState("");
+  const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const inputRef = useRef(null);
   const name = nameOf(users, who);
@@ -52,8 +60,44 @@ export function SignInSheet({ who, users, onDone, onCancel }) {
   }, []);
 
   useEffect(() => {
-    if (step === "pin" || step === "setup") inputRef.current?.focus?.();
+    if (step === "pin" || step === "setup" || step === "code") inputRef.current?.focus?.();
   }, [step, grownUp]);
+
+  // Escape closes the sheet, like every other sheet (QA O-31).
+  useEffect(() => {
+    const onKey = (event) => { if (event.key === "Escape") onCancel?.(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  // "Set up with a code" (O2-08): a one-time code Jonathan made for this device
+  // (auth.storyforge.enroll.code.v1). It is the way in when a PIN is locked on
+  // this device or set-up-by-PIN is paused, and for a grown-up with no PIN.
+  async function submitCode(event) {
+    event?.preventDefault?.();
+    const typed = formatSetupCode(code);
+    if (typed.length < 9) return;
+    setStep("working");
+    setError("");
+    try {
+      const session = await enrollDevice({ enrollmentCode: typed });
+      setCode("");
+      if (session?.userId === who) {
+        onDone();
+        return;
+      }
+      if (child) {
+        await finishChild();
+        return;
+      }
+      // The code set the device up for someone else; this grown-up still
+      // signs in with their own PIN, on a device that is now set up.
+      setStep("pin");
+    } catch (e) {
+      setStep("code");
+      setError(signInMessage(e.code, name));
+    }
+  }
 
   async function submitPin(event) {
     event?.preventDefault?.();
@@ -130,6 +174,36 @@ export function SignInSheet({ who, users, onDone, onCancel }) {
             </div>
             {pinField(`${nameOf(users, grownUp)}'s PIN`)}
           </>
+        )}
+        {step === "code" && (
+          <>
+            <h2>Set up with a code</h2>
+            <p className="signin-note">Type the set-up code Jonathan made for this device. It works once.</p>
+            <form className="signin-form" onSubmit={submitCode}>
+              <label className="signin-label" htmlFor="otherwise-setup-code">Set-up code</label>
+              <input
+                id="otherwise-setup-code"
+                ref={inputRef}
+                className="signin-pin signin-code"
+                type="text"
+                autoComplete="one-time-code"
+                autoCapitalize="characters"
+                spellCheck={false}
+                placeholder="ABCD-EFGH"
+                maxLength={9}
+                value={code}
+                onChange={(e) => setCode(formatSetupCode(e.target.value))}
+                aria-label="Set-up code"
+              />
+              <button className="gold-button" type="submit" disabled={formatSetupCode(code).length < 9}>Set up this device</button>
+            </form>
+            <button className="inline-button" type="button" onClick={() => { setStep(child ? "setup" : "pin"); setError(""); }}>Use a PIN instead</button>
+          </>
+        )}
+        {(step === "setup" || (step === "pin" && !isDeviceEnrolled())) && (
+          <button className="inline-button signin-use-code" type="button" onClick={() => { setStep("code"); setError(""); setPin(""); }}>
+            Set up with a code
+          </button>
         )}
         {step === "working" && <p className="signin-note" role="status">Signing in…</p>}
         {step === "failed" && (

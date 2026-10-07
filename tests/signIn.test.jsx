@@ -256,3 +256,55 @@ describe("the reader picker", () => {
     expect(await screen.findByText("LIBRARY")).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Otherwise r2 O2-08 / O2-07: a set-up code, and a lock that is this device's
+// ---------------------------------------------------------------------------
+
+describe("setting up with a code (O2-08)", () => {
+  it("the set-up sheet offers a code, and a code sets the device up for Keen", async () => {
+    server["/v1/auth/storyforge/device"] = (body) => json(200, { ...sessionBody("keen"), deviceId: "dev-9", deviceSecret: "s9" });
+    const done = vi.fn();
+    render(<SignInSheet who="keen" users={USERS} onDone={done} onCancel={() => {}} />);
+    fireEvent.click(screen.getByText("Set up with a code"));
+    fireEvent.change(screen.getByLabelText("Set-up code"), { target: { value: "bcdf ghjk" } });
+    expect(screen.getByLabelText("Set-up code").value).toBe("BCDF-GHJK");
+    fireEvent.click(screen.getByText("Set up this device"));
+    await waitFor(() => expect(done).toHaveBeenCalled());
+    const enroll = calls.find((c) => c.url.endsWith("/v1/auth/storyforge/device"));
+    expect(enroll.body.enrollmentCode).toBe("BCDF-GHJK");
+    expect(enroll.body.pin).toBeUndefined();
+    expect(auth.isDeviceEnrolled()).toBe(true);
+  });
+
+  it("a grown-up on a new device can use a code too; a bad code says so", async () => {
+    server["/v1/auth/storyforge/device"] = () => json(403, { ok: false, error: "ENROLLMENT_CODE_INVALID" });
+    render(<SignInSheet who="jonathan" users={USERS} onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.click(screen.getByText("Set up with a code"));
+    fireEvent.change(screen.getByLabelText("Set-up code"), { target: { value: "BCDFGHJK" } });
+    fireEvent.click(screen.getByText("Set up this device"));
+    await screen.findByText("That code didn't work. Ask Jonathan for a new one.");
+  });
+
+  it("Escape closes the sheet (O-31)", () => {
+    const cancel = vi.fn();
+    render(<SignInSheet who="jonathan" users={USERS} onDone={() => {}} onCancel={cancel} />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(cancel).toHaveBeenCalled();
+  });
+
+  it("formats whatever was typed into the server's shape", async () => {
+    const { formatSetupCode } = await import("../src/SignIn.jsx");
+    expect(formatSetupCode("bcdf-ghjk")).toBe("BCDF-GHJK");
+    expect(formatSetupCode(" b c d f g h j k z")).toBe("BCDF-GHJK");
+    expect(formatSetupCode("bcd")).toBe("BCD");
+  });
+});
+
+describe("a PIN lock is this device's, and says what to do (O2-07)", () => {
+  it("locked and paused are told apart, and both point at a set-up code", () => {
+    expect(auth.signInMessage("PIN_LOCKED")).toMatch(/on this device/);
+    expect(auth.signInMessage("PIN_LOCKED")).toMatch(/set-up code/);
+    expect(auth.signInMessage("PIN_SETUP_CLOSED")).toMatch(/set-up code/);
+  });
+});

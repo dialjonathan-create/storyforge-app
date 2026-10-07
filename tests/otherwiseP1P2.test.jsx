@@ -258,8 +258,9 @@ describe("P2: long operations do not lose their answer to a client timeout", () 
       await act(async () => { await vi.advanceTimersByTimeAsync(100); });
     }
     fireEvent.click(screen.getByRole("button", { name: "Write chapter 4" }));
-    // 150 s of "generating": past the 120 s the web used to give up at.
-    for (let t = 0; t < 150; t += 3) {
+    // 200 s of "generating": past the 180 s window (r2: was 120 s, chapters
+    // took ~300 s; the server now has a ~2-minute budget).
+    for (let t = 0; t < 200; t += 3) {
       await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
     }
     expect(screen.getByText("This is taking longer than expected.")).toBeTruthy();
