@@ -8,6 +8,10 @@ import { fetchVoices } from "./kokoro";
 import StoryMap, { mappablePlaces } from "./StoryMap";
 import { configureAuth, currentSession, hasSessionFor, installSessionFetch, isChildProfile, readerKey, signedOutMessage, SIGNED_OUT_EVENT, takeSignedOutReason } from "./auth";
 import { SignInSheet } from "./SignIn";
+import {
+  checkWatches, chapterWatches, clearNewChapter, continueLine, continueReading, forgetProgressFor, NEW_CHAPTER_EVENT,
+  newChapterFor, newChaptersIn, readyLine, recentReadFor, recordRecentRead, storyProgressFraction, unwatchChapter, watchChapter,
+} from "./readerProgress";
 
 // The build this browser is actually running, for when "did it deploy?" is
 // asked from a phone rather than from gcloud. Also served as /version.json.
@@ -429,6 +433,14 @@ export function friendlyErrorText(error, fallback) {
   return errorId && !childReading() ? `${text} (Error ${errorId.slice(0, 12)})` : text;
 }
 
+/** The longest message the story partner reads (the server's
+ *  STORYFORGE_CONVERSE_MESSAGE_MAX_CHARS default). */
+export const CONVERSE_MESSAGE_MAX_CHARS = 4000;
+export function tooLongMessage(text) {
+  const n = String(text || "").length;
+  return `That message is a bit too long for the story to read at once -- try saying it in under ${CONVERSE_MESSAGE_MAX_CHARS.toLocaleString("en-US")} characters (it was ${n.toLocaleString("en-US")}). Nothing was sent.`;
+}
+
 export const SIGNED_OUT_TEXT = "You're signed out on this device. Tap who's reading to sign in again.";
 
 async function execute(command, args = {}) {
@@ -757,9 +769,172 @@ export function GoneNotice({ what = "story", backTo = "/universes" }) {
   );
 }
 
+// --- "Your chapter is ready" + "Continue reading" (Otherwise polish) -------------
+
+/** Chapters a reader page is waiting on right now (that page shows them itself). */
+export const ACTIVE_CHAPTER_WAITS = new Set();
+export function activeWaitKey(storyId, chapterNumber) {
+  return `${storyId}#${Number(chapterNumber) || 0}`;
+}
+export const CHAPTER_WATCH_POLL_MS = 15000;
+
+/** Re-render when a watched chapter turns up (badges on the library). */
+function useNewChapterTick() {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const bump = () => setTick((n) => n + 1);
+    window.addEventListener(NEW_CHAPTER_EVENT, bump);
+    return () => window.removeEventListener(NEW_CHAPTER_EVENT, bump);
+  }, []);
+  return tick;
+}
+
+export function NewChapterBadge({ entry, count = 0, className = "" }) {
+  if (!entry?.chapterNumber && !(count > 0)) return null;
+  const text = count > 1 ? `${count} new chapters` : "New chapter";
+  const label = entry?.chapterNumber ? `New chapter: chapter ${entry.chapterNumber} is ready` : text;
+  return <span className={`new-chapter-badge ${className}`.trim()} aria-label={label}>{text}</span>;
+}
+
+/**
+ * App-wide: while the reader is anywhere else in the app, ask (with their own
+ * session, through the same status route the reader page polls) about each
+ * chapter they asked for, and say so the moment one is ready. No new route, no
+ * new credential: the server decides, per request, whether this reader may see
+ * the chapter, and a refusal simply ends the watch.
+ */
+export function ChapterReadyWatcher({ getStatus = getChapterStatus, pollMs = CHAPTER_WATCH_POLL_MS }) {
+  const nav = useNavigate();
+  const [toasts, setToasts] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    let running = false;
+    async function tick() {
+      if (cancelled || running) return;
+      const owner = dataOwner();
+      if (!owner || !chapterWatches(owner).length) return;
+      running = true;
+      try {
+        const ready = await checkWatches(owner, getStatus);
+        // The person on the device may have changed while we asked: only the
+        // reader who asked is told.
+        if (cancelled || dataOwner() !== owner) return;
+        const shown = ready.filter((watch) => !ACTIVE_CHAPTER_WAITS.has(activeWaitKey(watch.storyId, watch.chapterNumber)));
+        if (shown.length) {
+          setToasts((current) => [
+            ...current,
+            ...shown.map((watch) => ({
+              key: `${watch.storyId}#${watch.chapterNumber}#${Date.now()}`,
+              line: readyLine(watch, owner),
+              path: `/universes/${watch.universeId}/stories/${watch.storyId}`,
+            })),
+          ].slice(-3));
+        }
+      } finally {
+        running = false;
+      }
+    }
+    tick();
+    const interval = setInterval(tick, pollMs);
+    const onVisible = () => { if (document.visibilityState === "visible") tick(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [getStatus, pollMs]);
+  useEffect(() => {
+    if (!toasts.length) return undefined;
+    const timer = setTimeout(() => setToasts((current) => current.slice(1)), 12000);
+    return () => clearTimeout(timer);
+  }, [toasts]);
+  // Signed out / someone else: nothing of the last reader's stays on screen.
+  useEffect(() => {
+    const clear = () => setToasts([]);
+    window.addEventListener(SIGNED_OUT_EVENT, clear);
+    return () => window.removeEventListener(SIGNED_OUT_EVENT, clear);
+  }, []);
+  if (!toasts.length) return null;
+  return (
+    <div className="chapter-ready-stack" role="status" aria-live="polite">
+      <AnimatePresence>
+        {toasts.map((toast) => (
+          <motion.div
+            key={toast.key}
+            className="chapter-ready-toast"
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{ duration: 0.25 }}
+          >
+            <span className="chapter-ready-glyph" aria-hidden="true">✦</span>
+            <span className="chapter-ready-line">{toast.line}</span>
+            <button
+              type="button"
+              className="chapter-ready-open"
+              onClick={() => { setToasts((current) => current.filter((t) => t.key !== toast.key)); nav(toast.path); }}
+            >
+              Read it
+            </button>
+            <button
+              type="button"
+              className="chapter-ready-close"
+              aria-label="Dismiss"
+              onClick={() => setToasts((current) => current.filter((t) => t.key !== toast.key))}
+            >
+              ×
+            </button>
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+/** The reader's own stories, most recent first: story, chapter, how far in. */
+export function ContinueReading({ owner = dataOwner() }) {
+  const nav = useNavigate();
+  useNewChapterTick();
+  const entries = continueReading(owner);
+  if (!entries.length) return null;
+  return (
+    <section className="continue-reading" aria-label="Continue reading">
+      <h2 className="continue-heading">Continue reading</h2>
+      <div className="continue-row">
+        {entries.map((entry) => (
+          <button
+            type="button"
+            key={entry.storyId}
+            className="continue-card"
+            onClick={() => nav(`/universes/${entry.universeId}/stories/${entry.storyId}`)}
+          >
+            <NewChapterBadge entry={newChapterFor(owner, entry.storyId)} className="on-card" />
+            <span className="continue-title">{entry.title || "Your story"}</span>
+            {entry.universeTitle && entry.universeTitle !== entry.title && <span className="continue-world">{entry.universeTitle}</span>}
+            <span className="continue-line">{continueLine(entry)}</span>
+            <StoryProgress fraction={entry.storyFraction} label={`${entry.title || "Story"}: ${continueLine(entry)}`} />
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** A quiet bar: how far through the whole story this reader is. */
+export function StoryProgress({ fraction = 0, label = "" }) {
+  const pct = Math.round(Math.max(0, Math.min(1, Number(fraction) || 0)) * 100);
+  return (
+    <div className="story-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} aria-label={label || `${pct}% read`}>
+      <span style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
 function UniverseList() {
   const nav = useNavigate();
   const { activeReaders, readingGroup, setCurrentUniverse } = useApp();
+  useNewChapterTick();
   const [universes, setUniverses] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [attempt, setAttempt] = useState(0);
@@ -805,6 +980,7 @@ function UniverseList() {
       <section className="content">
         {universes === null && !loadError && <SkeletonCards />}
         {loadError && <LoadFailed error={loadError} what="the library" onRetry={() => setAttempt((n) => n + 1)} />}
+        {!loadError && <ContinueReading />}
         {!loadError && universes?.length === 0 && (
           <div className="empty-state">
             <h1>No universes yet.</h1>
@@ -851,6 +1027,7 @@ function UniverseList() {
                   <div className="cover-icon" style={{ color: universe.coverColor }}>{coverGlyph(universe.coverIcon)}</div>
                   <div className="card-copy">
                     <h2>{universe.title}</h2>
+                    <NewChapterBadge count={newChaptersIn(dataOwner(), universe.universeId)} />
                     <p>{universe.tagline || "A world waiting to be opened."}</p>
                     <div className="metadata">{countOf(universe.storyCount, "story", "stories")}{pos ? ` · last read ${pos}` : ""}</div>
                     <button className="inline-button">{pos ? "Continue" : "Explore"}</button>
@@ -887,6 +1064,7 @@ function UniverseDetail() {
   const { id } = useParams();
   const nav = useNavigate();
   const { setCurrentUniverse, setCurrentStory, activeReaders, readingGroup } = useApp();
+  useNewChapterTick();
   const [tab, setTab] = useState("stories");
   const [data, setData] = useState(null);
   const [stories, setStories] = useState(null);
@@ -1107,6 +1285,15 @@ function UniverseDetail() {
                 <AnimatePresence>
                   {stories?.map((story) => {
                     const pos = readPosition(readingGroup, story.storyId);
+                    // This reader's own place (UI-01: their keys only), the
+                    // newest of the bookmark, the scroll position and the
+                    // last chapter they opened.
+                    const recent = recentReadFor(dataOwner(), story.storyId);
+                    const place = resumePlace(readBookmark(story.storyId), pos);
+                    const atChapter = Math.max(Number(recent?.chapter) || 0, Number(place?.chapter) || 0);
+                    const atPercent = recent && Number(recent.chapter) === atChapter ? recent.scrollPercent
+                      : (Number(pos.chapter) === atChapter ? pos.scrollPercent : 0);
+                    const fresh = newChapterFor(dataOwner(), story.storyId);
                     const exportState = exportStatus[story.storyId] || {};
                     return (
                       <motion.article
@@ -1156,6 +1343,7 @@ function UniverseDetail() {
                           </div>
                         )}
                         <h2>{story.title}</h2>
+                        <NewChapterBadge entry={fresh} />
                         {/* An absent genre says so. The old fallback rendered
                             "family adventure" for a story that had no genre at
                             all, which is precisely how a wrong default hides:
@@ -1165,8 +1353,11 @@ function UniverseDetail() {
                           {story.genre || "genre not set"}
                           {story.audienceAge ? ` · ${story.audienceAge}` : ""}
                         </p>
-                        <div className="metadata">{countOf(story.totalChapters, "chapter", "chapters")} · {pos.chapter ? `Chapter ${pos.chapter}` : "not started"}</div>
-                        <Progress value={pos.chapter || 0} max={story.totalChapters || 1} />
+                        <div className="metadata">{countOf(story.totalChapters, "chapter", "chapters")} · {atChapter ? `Chapter ${atChapter}` : "not started"}</div>
+                        <StoryProgress
+                          fraction={storyProgressFraction({ chapter: atChapter, scrollPercent: atPercent, totalChapters: story.totalChapters })}
+                          label={atChapter ? `${story.title}: reading chapter ${atChapter} of ${story.totalChapters || atChapter}` : `${story.title}: not started`}
+                        />
                         {(exportState.message || exportState.error) && (
                           <div className={exportState.error ? "inline-error story-export-status" : "story-export-status"}>
                             {exportState.error || exportState.message}
@@ -1361,10 +1552,6 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-function Progress({ value, max }) {
-  return <div className="progress-track"><span style={{ width: `${Math.min(100, (value / Math.max(1, max)) * 100)}%` }} /></div>;
-}
-
 /**
  * Split a prose field into paragraphs. Blank lines first, since that is how the
  * editor writes them; a single unbroken block stays one paragraph rather than
@@ -1541,7 +1728,7 @@ export async function recordChoiceWithReaders(base, readersNow, fallbackReader, 
 function ChapterReader() {
   const { id, storyId } = useParams();
   const nav = useNavigate();
-  const { readingGroup, activeReaders, users, setCurrentStory } = useApp();
+  const { readingGroup, activeReaders, users, setCurrentStory, currentUniverse } = useApp();
   // Narration settings live in the drawer, not on the page: the reason the
   // picker never shipped was that there was nowhere to put it that did not
   // cover the chapter.
@@ -1639,6 +1826,20 @@ function ChapterReader() {
     }
   }
 
+  // "Continue reading" on the library: this reader's place in this story,
+  // with what the card needs to show it (title, world, how many chapters).
+  // Read through a ref so the scroll listener never holds a stale story.
+  const recentMetaRef = useRef({});
+  recentMetaRef.current = {
+    title: story && !story.offline ? story.title : "",
+    universeTitle: currentUniverse?.universeId === id ? currentUniverse.title : "",
+    totalChapters: story && !story.offline ? storyChapterLimit(story) : 0,
+  };
+  function noteRecentRead(pct, number = chapterNumber) {
+    if (!number) return;
+    recordRecentRead(dataOwner(), { universeId: id, storyId, chapter: number, scrollPercent: pct, ...recentMetaRef.current });
+  }
+
   function saveBookmarkHere() {
     if (!chapter) return;
     const point = paragraphAtScroll(chapter);
@@ -1700,7 +1901,7 @@ function ChapterReader() {
         // R4-08: the chapter this device last OPENED, not chapter 1 -- an opened
         // chapter nobody scrolled has no saved position, only a cached copy.
         const landingChapter = offlineLandingChapter(storyId, bookmark, saved);
-        const fallbackStory = { storyId, title: "Story", totalChapters: landingChapter, currentChapter: landingChapter };
+        const fallbackStory = { storyId, title: "Story", totalChapters: landingChapter, currentChapter: landingChapter, offline: true };
         setStory(fallbackStory);
         setReadingNow(initialReadingNow(fallbackStory, activeReaders));
         setCurrentStory(null);
@@ -1744,6 +1945,13 @@ function ChapterReader() {
         if (cancelled) return;
         setCreation(null);
         setChapter(res);
+        if (res?.chapterNumber && res.chapterReady !== false) {
+          // Opened: not "new" any more, and nothing left to tell anybody about.
+          clearNewChapter(dataOwner(), storyId, res.chapterNumber);
+          unwatchChapter(dataOwner(), storyId, res.chapterNumber);
+          const saved = readPosition(readingGroup, storyId);
+          noteRecentRead(saved?.chapter === res.chapterNumber ? saved.scrollPercent : 0, res.chapterNumber);
+        }
         // The chapter the card was offering to write now exists -- somebody
         // asked for it, here or somewhere else. The card has nothing left to
         // offer, and an offer to write a chapter that is already written is
@@ -1875,6 +2083,7 @@ function ChapterReader() {
       const pct = scrollable > 0 ? window.scrollY / scrollable : 0;
       setProgress(Math.max(0, Math.min(1, pct)));
       writePosition(readingGroup, storyId, chapterNumber, pct);
+      noteRecentRead(pct);
       if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 150) queueChoiceReveal();
     };
     window.addEventListener("scroll", handler, { passive: true });
@@ -1941,7 +2150,13 @@ function ChapterReader() {
     // Kept on `waiting` too, so Try Again after a timeout does not forget that
     // the server already said it started.
     let sawReshaping = Boolean(waiting.sawReshaping);
+    // This page is watching the chapter itself: the app-wide "ready" toast
+    // stays quiet for it (the chapter simply appears here).
+    const waitKey = activeWaitKey(storyId, targetChapter);
+    ACTIVE_CHAPTER_WAITS.add(waitKey);
     function showChapter(next) {
+      unwatchChapter(dataOwner(), storyId, targetChapter);
+      clearNewChapter(dataOwner(), storyId, targetChapter);
       cacheChapter(storyDataKey("chapter_cache", storyId), next);
       justShownRef.current = { storyId, chapterNumber: targetChapter, chapter: next };
       setChapter(next);
@@ -2018,6 +2233,7 @@ function ChapterReader() {
     return () => {
       cancelled = true;
       clearInterval(interval);
+      ACTIVE_CHAPTER_WAITS.delete(waitKey);
     };
   }, [id, storyId, waiting?.chapterNumber, waiting?.startedAt, waiting?.recording]);
 
@@ -2084,6 +2300,7 @@ function ChapterReader() {
         setFocusWriteCard(true);
         return;
       }
+      watchChapter(dataOwner(), { universeId: id, storyId, chapterNumber: Number(res?.chapterNumber) || nextChapter, title: story?.offline ? "" : story?.title });
       setWaiting({ chapterNumber: Number(res?.chapterNumber) || nextChapter, startedAt: Date.now(), messageIndex: 0 });
     } catch (error) {
       setWaiting({ chapterNumber: nextChapter, startedAt: Date.now(), failed: true, pickFailed: true,
@@ -2109,6 +2326,9 @@ function ChapterReader() {
       });
       setPendingWrite(null);
       writePendingWrite(storyId, null);
+      // Asked for: if the reader goes back to the library while it is written,
+      // the library tells them when it is ready.
+      watchChapter(dataOwner(), { universeId: id, storyId, chapterNumber: Number(res?.chapterNumber) || target, title: story?.offline ? "" : story?.title });
       setWaiting({ chapterNumber: Number(res?.chapterNumber) || target, startedAt: Date.now(), messageIndex: 0 });
     } catch (error) {
       // The pick stays recorded and the card stays up. A failed ask is not a
@@ -2216,6 +2436,12 @@ function ChapterReader() {
   }
 
   async function sendChatMessage(text) {
+    // The server refuses a message past CONVERSE_MESSAGE_MAX_CHARS (r7: a
+    // 50,000-character paste went to the model); say so here without a trip.
+    if (String(text || "").length > CONVERSE_MESSAGE_MAX_CHARS) {
+      setChatThread((current) => [...(current || []), { role: "assistant", content: tooLongMessage(text), kind: "error" }]);
+      return;
+    }
     const opening = !chatThread;
     setChatThread((current) => [...(current || []), { role: "user", content: text }]);
     // Fired before converse.v1 is issued so the history is almost always the
@@ -4121,6 +4347,7 @@ export function storyDataKey(kind, storyId, owner = dataOwner()) {
 /** A story this reader was refused: nothing of it stays on the device. */
 export function forgetStoryOnDevice(storyId, owner = dataOwner()) {
   if (!storyId) return;
+  forgetProgressFor(owner, storyId);
   try {
     const prefixes = ["chapter_cache", "pending_write", "bookmark"].map((kind) => readerKey(owner, kind, storyId));
     const posPrefix = readerKey(owner, "pos", "");
@@ -4302,9 +4529,18 @@ async function getChapterStatus(universeId, storyId, chapterNumber) {
     storyId,
     chapterNumber: String(chapterNumber),
   });
-  const response = await fetch(`${ABILITY_URL}/storyforge/chapter/status?${params.toString()}`, { cache: "no-store", headers: abilityHeaders() });
+  let response;
+  try {
+    response = await fetch(`${ABILITY_URL}/storyforge/chapter/status?${params.toString()}`, { cache: "no-store", headers: abilityHeaders() });
+  } catch {
+    throw new StoryRequestError("Couldn't reach the story server.", { network: true });
+  }
   const data = await response.json().catch(() => ({}));
-  if (!response.ok || data.ok === false || data.error) throw new Error(data.message || data.error || "Could not check chapter status");
+  if (!response.ok || data.ok === false || data.error) {
+    throw new StoryRequestError(data.message || data.error || "Could not check chapter status", {
+      status: response.status, code: typeof data.error === "string" ? data.error : "",
+    });
+  }
   return data;
 }
 
@@ -5307,6 +5543,7 @@ function Root() {
       <AppProvider>
         <OfflineBanner />
         <SessionWatcher />
+        <ChapterReadyWatcher />
         {/* The outermost net. Nothing below this can blank the app: the worst
             case is one screen replaced by a message and a way back. */}
         <RoutedBoundary>
@@ -5360,7 +5597,7 @@ function RoutedBoundary({ children }) {
 // Exported for tests. The young-reader flow had no automated coverage at all,
 // which is how a dead end in the path a child uses survived unnoticed; a flow
 // that a seven-year-old walks should not be the least-tested screen in the app.
-export { ChapterReader, UniverseList, NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard, ChoicesProposalCard, WriteNextChapterCard, ChoicePanel, heldForRequest, writeChapterMessage, AbilityCommandChapterRequest, ErrorBoundary, Lore, UniverseEditor, Prose, InteractiveParagraph };
+export { ChapterReader, UniverseList, UniverseDetail, NewStory, NewUniverse, AppProvider, suggestedAudienceForTier, Composer, composerRows, COMPOSER_MAX_ROWS, StoryChatSheet, renderMarkdown, SuggestedReplies, ProposalCard, ChoicesProposalCard, WriteNextChapterCard, ChoicePanel, heldForRequest, writeChapterMessage, AbilityCommandChapterRequest, ErrorBoundary, Lore, UniverseEditor, Prose, InteractiveParagraph };
 
 createRoot(document.getElementById("root")).render(<Root />);
 

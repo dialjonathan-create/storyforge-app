@@ -2519,3 +2519,192 @@ h3 {
   outline: 2px solid var(--gold-light);
   outline-offset: 4px;
 }
+
+/* Otherwise polish (2026-10-08): "Continue reading", a gentle per-story
+   progress bar, "New chapter" badges and the "your chapter is ready" toast. */
+.continue-reading {
+  margin: 0 0 22px;
+  min-width: 0;
+}
+
+.continue-heading {
+  margin: 0 0 10px;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.continue-row {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  padding-bottom: 6px;
+  max-width: 100%;
+}
+
+.continue-card {
+  position: relative;
+  flex: 0 0 min(240px, 72vw);
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+  padding: 16px 16px 14px;
+  border: 1px solid rgba(240, 230, 211, 0.1);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(26, 39, 68, 0.9), rgba(22, 33, 48, 0.9));
+  color: inherit;
+  text-align: left;
+  scroll-snap-align: start;
+  transition: border-color 0.2s ease, transform 0.12s ease;
+}
+
+.continue-card:active {
+  transform: scale(0.985);
+}
+
+.continue-card:focus-visible {
+  outline: 2px solid var(--gold-light);
+  outline-offset: 2px;
+}
+
+.continue-title {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: Georgia, "Iowan Old Style", serif;
+  font-size: 1.05rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.continue-world {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.continue-line {
+  margin-top: 6px;
+  color: var(--gold-light);
+  font-size: 0.85rem;
+}
+
+.story-progress {
+  height: 4px;
+  margin-top: 14px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(240, 230, 211, 0.07);
+}
+
+.continue-card .story-progress {
+  margin-top: 8px;
+}
+
+.story-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(176, 125, 32, 0.55), rgba(200, 146, 42, 0.85));
+  transition: width 0.6s ease;
+}
+
+.new-chapter-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  margin: 2px 0 6px;
+  padding: 3px 10px;
+  border: 1px solid rgba(200, 146, 42, 0.45);
+  border-radius: 999px;
+  background: rgba(200, 146, 42, 0.14);
+  color: var(--gold-light);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.new-chapter-badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gold-light);
+  box-shadow: 0 0 8px rgba(200, 146, 42, 0.7);
+}
+
+.new-chapter-badge.on-card {
+  margin: 0 0 4px;
+}
+
+.chapter-ready-stack {
+  position: fixed;
+  z-index: 40;
+  left: 50%;
+  /* Above the + button, which sits in the bottom-right corner. */
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  display: grid;
+  gap: 8px;
+  width: min(460px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.chapter-ready-toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 8px 8px 16px;
+  border: 1px solid rgba(200, 146, 42, 0.5);
+  border-radius: 18px;
+  background: #14202c;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  color: var(--text-primary);
+  pointer-events: auto;
+}
+
+.chapter-ready-glyph {
+  color: var(--gold-light);
+}
+
+.chapter-ready-line {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+
+.chapter-ready-open {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 12px;
+  background: var(--gold);
+  color: #1a1206;
+  font-weight: 600;
+}
+
+.chapter-ready-close {
+  flex: 0 0 auto;
+  width: 44px;
+  min-height: 44px;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 1.3rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .story-progress span,
+  .continue-card {
+    transition: none;
+  }
+}

@@ -69,10 +69,11 @@ for (const name of Object.keys(FIXTURES)) {
       widest: Math.max(0, ...[...document.querySelectorAll(".prose p")].map((p) => p.scrollWidth)),
       // UI-03: a title wider than its own box (a long word that did not break),
       // and a cover icon that grew past its 68-px tile.
-      titles: [...document.querySelectorAll(".universe-hero h1, .reading-column h1, .header-title, .reader-title, .hero-icon")]
+      titles: [...document.querySelectorAll(".universe-hero h1, .reading-column h1, .header-title, .reader-title, .hero-icon, .chapter-ready-toast, .continue-reading, .story-card .new-chapter-badge, .story-card .story-progress")]
         // Header titles ellipsize by design (scrollWidth > clientWidth is the
         // ellipsis); for them only the box itself must stay on screen.
-        .filter((el) => (!el.matches(".header-title, .reader-title") && el.scrollWidth > el.clientWidth + 1)
+        // The Continue row scrolls sideways inside itself by design.
+        .filter((el) => (!el.matches(".header-title, .reader-title, .continue-reading") && el.scrollWidth > el.clientWidth + 1)
           || el.getBoundingClientRect().right > window.innerWidth + 1)
         .map((el) => `${el.className || el.tagName}: ${el.scrollWidth}>${el.clientWidth}`),
     }));
