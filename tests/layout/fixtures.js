@@ -31,5 +31,8 @@ export const FIXTURES = {
   sceneBreak: "Before.\n***\nAfter.",
   corrupted: CORRUPTED,
   longWord: `${LONG_WORD} began the chapter.`,
+  // Otherwise polish: the Continue row, a story card with its badge and bar,
+  // and the "chapter is ready" toast, with words long enough to push.
+  libraryPolish: "Keen opened the library and found his place again.",
   canary: TOO_WIDE,
 };
