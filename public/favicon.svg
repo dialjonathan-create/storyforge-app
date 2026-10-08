@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="64" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#253863"/><stop offset="1" stop-color="#0d1628"/></linearGradient>
+    <linearGradient id="sky" x1="0" y1="10" x2="0" y2="54" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2a4a85"/><stop offset=".45" stop-color="#7d6aa6"/><stop offset=".8" stop-color="#f5ad74"/><stop offset="1" stop-color="#fff2cc"/></linearGradient>
+    <linearGradient id="gold" x1="0" y1="8" x2="0" y2="58" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fbe5a8"/><stop offset=".5" stop-color="#e1ae52"/><stop offset="1" stop-color="#a87422"/></linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <path d="M19 54 V27 A13 13 0 0 1 45 27 V54 Z" fill="url(#sky)"/>
+  <path d="M33 21 Q33.5 27.5 40 28 Q33.5 28.5 33 35 Q32.5 28.5 26 28 Q32.5 27.5 33 21Z" fill="#fffaf0"/>
+  <path d="M19 54 V27 A13 13 0 0 1 45 27 V54" fill="none" stroke="url(#gold)" stroke-width="4.5"/>
+  <rect x="14" y="52" width="36" height="4.5" rx="1.6" fill="url(#gold)"/>
+</svg>

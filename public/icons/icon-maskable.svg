@@ -41,11 +41,11 @@
     <filter id="shadowBlur" x="-20%" y="-50%" width="140%" height="200%"><feGaussianBlur stdDeviation="7"/></filter>
     <clipPath id="open"><path d="M304 846 V470 A172 172 0 0 1 648 470 V846 Z"/></clipPath>
   </defs>
-    <!-- Otherwise app icon, "The door ajar": an arched doorway, opened onto another
-       sky, where the road forks. Full-bleed square: the OS applies the mask. -->
+    <!-- Maskable variant: the scene scaled to 80% so the arch, door and star sit inside the
+       40%-radius safe circle any platform mask leaves. -->
   <rect width="1024" height="1024" fill="url(#night)"/>
   <rect width="1024" height="1024" fill="url(#halo)"/>
-  <g transform="translate(512 540) scale(1.1) translate(-519 -580)">
+  <g transform="translate(512 512) scale(.8) translate(-512 -575)">
   <g fill="#f6e3b4">
     <circle cx="170" cy="196" r="4.5" opacity=".55"/><circle cx="846" cy="168" r="3.5" opacity=".45"/>
     <circle cx="896" cy="420" r="3.5" opacity=".35"/><circle cx="128" cy="500" r="3.5" opacity=".3"/>
