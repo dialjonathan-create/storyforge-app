@@ -83,7 +83,7 @@ export default function ShareDialog({ universeId, storyId, onClose }) {
             {can && (
               <fieldset className="share-options">
                 <legend>What editors may do</legend>
-                <label><input type="checkbox" checked={options.directAllowed !== false} onChange={(e) => setOptions({ ...options, directAllowed: e.target.checked })} /> Let editors apply Ability's changes directly (otherwise they arrive as suggestions)</label>
+                <label><input type="checkbox" checked={options.directAllowed === true} onChange={(e) => setOptions({ ...options, directAllowed: e.target.checked })} /> Let editors apply Ability's changes directly (otherwise they arrive as suggestions)</label>
                 <label>Whole-chapter drafts:
                   <select value={options.draftWho || "editors"} onChange={(e) => setOptions({ ...options, draftWho: e.target.value })}>
                     <option value="editors">Any editor</option>

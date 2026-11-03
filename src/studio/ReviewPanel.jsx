@@ -41,10 +41,10 @@ export default function ReviewPanel({ suggestions, ydoc, canEdit, onResolve, edi
         </div>
         {shown.length === 0 ? <p className="muted">No suggestions waiting.</p> : (
           <>
-            {canEdit && (
+            {canEdit && shown.length >= 2 && (
               <div className="review-bulk">
-                <button type="button" className="st-btn" onClick={() => onResolve(shown.map((s) => s.id), "accept")}>Accept {shown.length === 1 ? "it" : `all ${shown.length}`}</button>
-                <button type="button" className="st-btn ghost" onClick={() => onResolve(shown.map((s) => s.id), "reject")}>Reject {shown.length === 1 ? "it" : "all"}</button>
+                <button type="button" className="st-btn" onClick={() => onResolve(shown.map((s) => s.id), "accept")}>Accept all {shown.length}</button>
+                <button type="button" className="st-btn ghost" onClick={() => onResolve(shown.map((s) => s.id), "reject")}>Reject all</button>
               </div>
             )}
             <ul className="review-list">

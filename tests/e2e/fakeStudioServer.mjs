@@ -14,7 +14,7 @@ const CH2 = "The deck tilted toward the east.\n\nVerath was a word nobody on boa
 function fresh() {
   return {
     published: { 1: { prose: CH1, title: "The Rail", choices: [{ text: "Ask Sable about Verath" }, { text: "Go below" }, { text: "Climb the mast" }] }, 2: { prose: CH2, title: "East", choices: [] } },
-    checkpoints: {}, versions: [], expired: new Set(), sharing: { familyDefault: "read", people: {} }, settings: {}, calls: [], levels: { jonathan: "owner", adele: "suggest", keen: "read" },
+    checkpoints: {}, versions: [], expired: new Set(), sharing: { familyDefault: "read", people: {} }, options: { directAllowed: false, draftWho: "editors" }, settings: {}, calls: [], levels: { jonathan: "owner", adele: "suggest", keen: "read" },
   };
 }
 let S = fresh();
@@ -40,7 +40,11 @@ async function seedRoom(docId, markdown) {
 }
 
 const levelOf = (who) => S.sharing.people[who] || (who === "jonathan" ? "owner" : S.levels[who] || S.sharing.familyDefault);
-const modesFor = (lvl) => ({ owner: ["suggest", "direct", "draft"], edit: ["suggest", "direct", "draft"], suggest: ["suggest"] }[lvl] || []);
+const modesFor = (lvl) => {
+  const editor = lvl === "owner" || lvl === "edit";
+  if (!editor) return lvl === "suggest" ? ["suggest"] : [];
+  return S.options.directAllowed === true ? ["suggest", "direct", "draft"] : ["suggest", "draft"];
+};
 
 async function handleLive(command, a, who) {
   if (LIVE && command === "storyforge.studio.ticket.v1") {
@@ -74,7 +78,7 @@ function handle(command, a, who) {
         chapter: { chapterNumber: n, exists: Boolean(pub), chapterTitle: pub?.title || "", choices: pub?.choices || [] },
         seed: { markdown: pub?.prose || "", checkpoint: cps.length && cps.at(-1).state ? { state: cps.at(-1).state } : null },
         universe: { universeId: "meridian-universe", title: "The Meridian Universe", kind: "interactive" },
-        story: { storyId: "the-meridian", title: "The Meridian", ownerId: "jonathan" }, options: { directAllowed: true, draftWho: "editors" } };
+        story: { storyId: "the-meridian", title: "The Meridian", ownerId: "jonathan" }, options: S.options };
     }
     case "storyforge.studio.checkpoint.v1": {
       (S.checkpoints[n] = S.checkpoints[n] || []).push({ ...a, checkpointId: `cp${Date.now()}${Math.random().toString(36).slice(2, 5)}`, createdAt: new Date().toISOString() });
@@ -113,14 +117,15 @@ function handle(command, a, who) {
       return { ok: true, kind: "rewrite", appliedBy: "client", mode: a.mode || "suggest", suggested: 1, ops: [{ op: "replace", pid: block.pid, quote, text: "Sable watched the clouds fold over themselves." }], context: ["Ch 1 draft"] };
     }
     case "storyforge.studio.sharing.get.v1":
-      return { ok: true, sharing: { ownerId: "jonathan", familyDefault: S.sharing.familyDefault, locked: false, canChange: who === "jonathan", people: ["jonathan", "adele", "keen", "talia"].map((p) => ({ userId: p, level: p === "jonathan" ? "owner" : levelOf(p), owner: p === "jonathan", explicit: Boolean(S.sharing.people[p]), hasUniverseAccess: true })) }, options: { directAllowed: true, draftWho: "editors" } };
+      return { ok: true, sharing: { ownerId: "jonathan", familyDefault: S.sharing.familyDefault, locked: false, canChange: who === "jonathan", people: ["jonathan", "adele", "keen", "talia"].map((p) => ({ userId: p, level: p === "jonathan" ? "owner" : levelOf(p), owner: p === "jonathan", explicit: Boolean(S.sharing.people[p]), hasUniverseAccess: true })) }, options: S.options };
     case "storyforge.studio.sharing.set.v1": {
       if (who !== "jonathan") return { ok: false, error: "owner_only", message: "Only the person who made this story can change who can see it." };
       const before = Object.fromEntries(["adele", "keen", "talia"].map((p) => [p, levelOf(p)]));
       S.sharing = { familyDefault: a.familyDefault || S.sharing.familyDefault, people: { ...a.people } };
+      if (a.options) S.options = { ...S.options, directAllowed: a.options.directAllowed === true, draftWho: a.options.draftWho || S.options.draftWho };
       const rank = { none: 0, read: 1, suggest: 2, edit: 3 };
       const lowered = Object.keys(before).filter((p) => rank[levelOf(p)] < rank[before[p]]);
-      return { ok: true, lowered, sharing: handle("storyforge.studio.sharing.get.v1", {}, who).sharing, options: a.options };
+      return { ok: true, lowered, sharing: handle("storyforge.studio.sharing.get.v1", {}, who).sharing, options: S.options };
     }
     default: return { status: 404, body: { ok: false, error: "unknown", message: `fake server has no ${command}` } };
   }
@@ -141,7 +146,7 @@ http.createServer((req, res) => {
     const token = String(req.headers.authorization || "").replace(/^Bearer /, "");
     const who = token.startsWith("tok-") ? token.slice(4).split("-")[0] : "";
     if (url.pathname === "/__reset") { S = fresh(); return send(res, 200, { ok: true }); }
-    if (url.pathname === "/__state") return send(res, 200, { published: S.published, calls: S.calls.slice(-50), checkpoints: Object.fromEntries(Object.entries(S.checkpoints).map(([k, v]) => [k, v.length])) });
+    if (url.pathname === "/__state") return send(res, 200, { options: S.options, published: S.published, calls: S.calls.slice(-50), checkpoints: Object.fromEntries(Object.entries(S.checkpoints).map(([k, v]) => [k, v.length])) });
     if (url.pathname === "/__expire") { S.expired.add(body.token); return send(res, 200, { ok: true }); }
     if (url.pathname === "/__level") { S.levels[body.user] = body.level; return send(res, 200, { ok: true }); }
     if (url.pathname === "/v1/auth/storyforge/refresh") return send(res, 401, { ok: false, error: "SESSION_IDLE", message: "signed out after a while away" });

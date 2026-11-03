@@ -155,6 +155,39 @@ test("read only: watching, cannot type", async ({ page }) => {
   await expect(page.locator(".st-level")).toHaveText("Read only");
 });
 
+test("Direct mode is off by default: the box is unticked and Ability's edits arrive as suggestions", async ({ page }) => {
+  await openChapter(page);
+  await page.getByRole("button", { name: "Share" }).click();
+  const box = page.getByRole("dialog", { name: "Share this story" }).getByLabel(/apply Ability's changes directly/);
+  await expect(box).not.toBeChecked();
+  await page.getByRole("button", { name: "Close sharing" }).click();
+  await selectText(page, "Sable stood at the rail for a very long time, watching the clouds fold over themselves.");
+  await page.locator(".st-bubble").getByRole("button", { name: "Tighten" }).click();
+  await expect(page.locator("ins.sg-ins.sg-ability")).toBeVisible();
+  const run = (await state(page)).calls.find((c) => c.command === "storyforge.studio.ai.run.v1");
+  expect(run.args.mode).toBe("suggest");
+});
+
+test("review: per-suggestion buttons, and Accept all / Reject all only for two or more", async ({ page }) => {
+  await openChapter(page);
+  await page.getByRole("radio", { name: "Suggesting" }).click();
+  await page.locator(".ms-page-body p", { hasText: "Nobody answered" }).click();
+  await page.keyboard.press("End");
+  await page.keyboard.type(" One.");
+  await page.getByRole("tab", { name: /Review/ }).click();
+  await expect(page.locator(".sg-card")).toHaveCount(1);
+  await expect(page.locator(".review-bulk")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Accept (it|all)/ })).toHaveCount(0);
+  await page.locator(".ms-page-body p", { hasText: "Keen climbed" }).click();
+  await page.keyboard.press("End");
+  await page.keyboard.type(" Two.");
+  await expect(page.locator(".sg-card")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Accept all 2" })).toBeVisible();
+  await page.getByRole("button", { name: "Reject all" }).click();
+  await expect(page.locator(".sg-card")).toHaveCount(0);
+  await expect(body(page)).not.toContainText("One.");
+});
+
 test("sharing: the owner changes levels, others cannot", async ({ page, browser }) => {
   await openChapter(page);
   await page.getByRole("button", { name: "Share" }).click();
