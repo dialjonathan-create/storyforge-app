@@ -20,6 +20,7 @@ if (typeof window !== "undefined") {
   window.__STORYFORGE_BUILD__ = BUILD_SHA;
 }
 
+const StudioApp = React.lazy(() => import("./studio/StudioApp.jsx"));
 const AbilityCommandDraftApprove = "storyforge.draft.approve.v1";
 const AbilityCommandDraftDismiss = "storyforge.draft.dismiss.v1";
 const AbilityCommandChapterChoicesSet = "storyforge.chapter.choices.set.v1";
@@ -658,13 +659,16 @@ function SessionWatcher() {
   useEffect(() => {
     const out = () => {
       localStorage.removeItem("storyforge_default_reader");
+      // The studio keeps its page open on a lapsed session: it turns read-only, keeps the
+      // unsynced text on this device and asks for the PIN (src/studio/PinResume.jsx).
+      if (window.location.pathname.startsWith("/studio")) return;
       nav("/", { replace: true });
     };
     window.addEventListener(SIGNED_OUT_EVENT, out);
     return () => window.removeEventListener(SIGNED_OUT_EVENT, out);
   }, [nav]);
   useEffect(() => {
-    if (location.pathname === "/") return;
+    if (location.pathname === "/" || location.pathname.startsWith("/studio")) return;
     const session = currentSession();
     const who = [...(activeReaders || [])].sort()[0];
     if (!session || !who || session.userId !== who) nav("/", { replace: true });
@@ -981,6 +985,10 @@ function UniverseList() {
         {universes === null && !loadError && <SkeletonCards />}
         {loadError && <LoadFailed error={loadError} what="the library" onRetry={() => setAttempt((n) => n + 1)} />}
         {!loadError && <ContinueReading />}
+        {/* The writing studio (2026-11-03) is a computer tool for grown-ups; the kids' reader never sees the link. */}
+        {grownUpSignedIn() && (
+          <a className="studio-entry" href="/studio" onClick={(e) => { e.preventDefault(); nav("/studio"); }}>Open the writing studio</a>
+        )}
         {!loadError && universes?.length === 0 && (
           <div className="empty-state">
             <h1>No universes yet.</h1>
@@ -5555,6 +5563,8 @@ function Root() {
             <Route path="/universes/:id/edit" element={<UniverseEditor />} />
             <Route path="/universes/:id/new-story" element={<NewStory />} />
             <Route path="/universes/:id/stories/:storyId" element={<ChapterReader />} />
+            {/* The writing studio: its own lazy chunk, so the reader on the kids' iPad never loads the editor. */}
+            <Route path="/studio/*" element={<React.Suspense fallback={<div className="studio-loading" role="status">Opening the studio…</div>}><StudioApp /></React.Suspense>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </RoutedBoundary>
