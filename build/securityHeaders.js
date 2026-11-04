@@ -33,7 +33,15 @@ function originOf(url) {
   }
 }
 
-export function contentSecurityPolicy(abilityUrl = process.env.VITE_ABILITY_URL || DEFAULT_ABILITY_URL) {
+// The writing studio's sync server (Cloudflare worker, 2026-11-03): its https origin and the
+// matching wss origin, only when configured.
+export function studioOrigins(syncUrl = process.env.VITE_STUDIO_SYNC_URL || "") {
+  const origin = originOf(syncUrl);
+  if (!origin || !/^https:\/\//.test(origin)) return [];
+  return [origin, origin.replace(/^https:/, "wss:")];
+}
+
+export function contentSecurityPolicy(abilityUrl = process.env.VITE_ABILITY_URL || DEFAULT_ABILITY_URL, syncUrl) {
   const api = originOf(abilityUrl) || DEFAULT_ABILITY_URL;
   const directives = {
     "default-src": ["'self'"],
@@ -42,7 +50,7 @@ export function contentSecurityPolicy(abilityUrl = process.env.VITE_ABILITY_URL 
     "font-src": ["'self'", "https://fonts.gstatic.com", "data:"],
     "img-src": ["'self'", "data:", "blob:", api, ...IMAGE_ORIGINS],
     "media-src": ["'self'", "blob:", api],
-    "connect-src": ["'self'", api, LEGACY_KOKORO_ORIGIN],
+    "connect-src": ["'self'", api, LEGACY_KOKORO_ORIGIN, ...studioOrigins(syncUrl)],
     "worker-src": ["'self'", "blob:"],
     "child-src": ["'self'", "blob:"],
     "manifest-src": ["'self'"],

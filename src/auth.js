@@ -291,7 +291,7 @@ export async function enrollDevice({ userId, pin, enrollmentCode }) {
 }
 
 /** Choose who is reading. Children need no PIN on an enrolled device; adults do. */
-export async function signInProfile({ userId, pin }) {
+export async function signInProfile({ userId, pin, personalDevice }) {
   const device = deviceCredentials();
   if (!device) throw new SignInError("DEVICE_NOT_ENROLLED");
   try {
@@ -299,6 +299,9 @@ export async function signInProfile({ userId, pin }) {
       ...device,
       userId: String(userId || "").toLowerCase(),
       pin: pin || undefined,
+      // Otherwise studio (2026-11-03): a grown-up may mark THIS computer as their own,
+      // with their PIN: 8 idle hours here instead of 30 minutes (decided on the server).
+      personalDevice: typeof personalDevice === "boolean" ? personalDevice : undefined,
     });
     return replaceSession(sessionFrom(data));
   } catch (error) {

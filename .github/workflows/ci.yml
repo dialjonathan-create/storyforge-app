@@ -63,3 +63,15 @@ jobs:
 
       - name: Layout check
         run: node tests/layout/check-width.mjs
+
+      # 2026-11-03, the writing studio: the editor must stay out of the reader's bundle
+      # (its own lazy chunk, <= 350 KB gzipped), and the studio is exercised in a real
+      # browser against a stand-in story server -- editing, suggestions, Ability's edits,
+      # publish, permissions, sharing, print, session expiry, no token in any URL, axe.
+      - name: Studio bundle budget
+        run: npm run budget
+
+      - name: Studio browser tests
+        env:
+          CI: "true"
+        run: npm run test:e2e

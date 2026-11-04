@@ -2708,3 +2708,13 @@ h3 {
     transition: none;
   }
 }
+
+/* The way into the writing studio (grown-ups, computers). */
+.studio-entry {
+  display: inline-block;
+  margin: 0 0 18px;
+  color: var(--gold-light);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+@media (max-width: 899px) { .studio-entry { display: none; } }
