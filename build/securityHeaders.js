@@ -22,6 +22,10 @@
 // the config drags esbuild in, which refuses to load there -- see versionJson).
 
 export const DEFAULT_ABILITY_URL = "https://ability-supervisor-service-818269465014.us-central1.run.app";
+// The production sync worker (ability-supervisor-service cloudflare/otherwise-studio). 2026-11-18: the
+// deploy never set VITE_STUDIO_SYNC_URL, so the CSP left the worker out of connect-src, the browser
+// refused the studio's WebSocket, and a chapter opened empty with "Saved" (nothing reached the worker).
+export const DEFAULT_STUDIO_SYNC_URL = "https://otherwise-studio.dialjonathan.workers.dev";
 export const LEGACY_KOKORO_ORIGIN = "https://kokoro.abilityai.systems";
 export const IMAGE_ORIGINS = ["https://storage.googleapis.com", "https://firebasestorage.googleapis.com"];
 
@@ -34,8 +38,8 @@ function originOf(url) {
 }
 
 // The writing studio's sync server (Cloudflare worker, 2026-11-03): its https origin and the
-// matching wss origin, only when configured.
-export function studioOrigins(syncUrl = process.env.VITE_STUDIO_SYNC_URL || "") {
+// matching wss origin. Unset = the production worker; an explicit "" = none.
+export function studioOrigins(syncUrl = process.env.VITE_STUDIO_SYNC_URL || DEFAULT_STUDIO_SYNC_URL) {
   const origin = originOf(syncUrl);
   if (!origin || !/^https:\/\//.test(origin)) return [];
   return [origin, origin.replace(/^https:/, "wss:")];

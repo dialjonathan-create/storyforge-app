@@ -34,3 +34,11 @@ describe("studio helpers", () => {
     expect(parseRange("9", [1, 2])).toEqual([]);
   });
 });
+
+describe("the deployed CSP lets the studio reach its sync worker", () => {
+  it("names the production worker when nothing is configured", () => {
+    const csp = contentSecurityPolicy("https://api.example");
+    expect(csp).toContain("https://otherwise-studio.dialjonathan.workers.dev");
+    expect(csp).toContain("wss://otherwise-studio.dialjonathan.workers.dev");
+  });
+});
