@@ -113,7 +113,16 @@ export class StudioSync {
     if (!ticket?.ticket) { this.setStatus({ mode: "local" }); return; }
     this.level = ticket.level;
     const url = `${this.syncUrl.replace(/^http/, "ws")}/ws/${encodeURIComponent(this.docId)}`;
-    const ws = new WebSocket(url);
+    let ws;
+    try {
+      ws = new WebSocket(url);
+    } catch (error) {
+      // A page policy (CSP connect-src) or a bad URL refuses the socket synchronously. Say so instead of
+      // leaving the editor empty under a "Saved" label (2026-11-18).
+      this.setStatus({ connected: false, error: "blocked" });
+      this.scheduleRetry();
+      return;
+    }
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.onopen = () => ws.send(JSON.stringify({ t: "auth", ticket: ticket.ticket }));
