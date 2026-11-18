@@ -5,7 +5,7 @@ import { call } from "./api.js";
 
 let cache = null;
 
-export default function Binder({ current }) {
+export default function Binder({ current, expandAll = false }) {
   const nav = useNavigate();
   const [lib, setLib] = useState(cache);
   const [error, setError] = useState("");
@@ -31,10 +31,12 @@ export default function Binder({ current }) {
             const next = (st.chapters.at(-1)?.chapterNumber || 0) + 1;
             return (
               <div key={st.storyId} className="binder-story">
-                <button type="button" className="binder-story-btn" aria-expanded={isOpen} onClick={() => toggle(key)}>
-                  <span className="caret" aria-hidden="true">{isOpen ? "▾" : "▸"}</span>{st.title}
-                </button>
-                {isOpen && (
+                {expandAll ? <h3 className="binder-story-btn">{st.title}</h3> : (
+                  <button type="button" className="binder-story-btn" aria-expanded={isOpen} onClick={() => toggle(key)}>
+                    <span className="caret" aria-hidden="true">{isOpen ? "▾" : "▸"}</span>{st.title}
+                  </button>
+                )}
+                {(isOpen || expandAll) && (
                   <ol className="binder-chapters">
                     {st.chapters.map((c) => {
                       const here = current && current.universeId === u.universeId && current.storyId === st.storyId && Number(current.chapterNumber) === Number(c.chapterNumber);

@@ -572,10 +572,10 @@ function Toolbar({ editor, canWrite, settings, setSettings, onFind }) {
         <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5" /><path d="M12.5 12.5L17 17" /></svg>
       </button>
       <span className="st-grow" />
-      <select aria-label="Theme" value={settings.theme || "light"} onChange={(e) => setSettings({ ...settings, theme: e.target.value })}>
+      <select aria-label="Theme" value={settings.theme || "dark"} onChange={(e) => setSettings({ ...settings, theme: e.target.value })}>
+        <option value="dark">Otherwise</option>
         <option value="light">Light</option>
         <option value="sepia">Sepia</option>
-        <option value="dark">Dark</option>
       </select>
       <select aria-label="Reading font" value={settings.font || "serif"} onChange={(e) => setSettings({ ...settings, font: e.target.value })}>
         <option value="serif">Book</option>

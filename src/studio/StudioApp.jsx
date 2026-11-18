@@ -16,7 +16,7 @@ function loadLocal() {
 }
 
 function useSettings() {
-  const [settings, setLocal] = useState(() => ({ theme: "light", font: "serif", textSize: 3, ...loadLocal() }));
+  const [settings, setLocal] = useState(() => ({ theme: "dark", font: "serif", textSize: 3, ...loadLocal() }));
   useEffect(() => {
     if (!currentSession()) return;
     call("storyforge.studio.settings.get.v1", {}).then((res) => setLocal((s) => ({ ...s, ...(res.settings || {}) }))).catch(() => {});
@@ -50,11 +50,12 @@ function StudioHome() {
   return (
     <div className="studio-home">
       <header className="home-head">
-        <a href="/universes" className="st-link">Back to reading</a>
-        <h1>Studio</h1>
+        <a href="/universes" className="st-link">← Back to reading</a>
+        <div className="home-wordmark" aria-hidden="true">Otherwise</div>
+        <h1>Writing studio</h1>
         <p>Pick a chapter to write in. Changes stay in the draft until you publish them.</p>
       </header>
-      <div className="home-binder">{who ? <Binder /> : null}</div>
+      <div className="home-binder">{who ? <Binder expandAll /> : null}</div>
     </div>
   );
 }
@@ -65,7 +66,7 @@ export default function StudioApp() {
   const session = currentSession();
   const theme = settings.theme === "system"
     ? (typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light")
-    : settings.theme || "light";
+    : settings.theme || "dark";
   return (
     <div className="studio" data-theme={theme}>
       <div className="studio-narrow" role="note">
